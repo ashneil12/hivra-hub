@@ -8,10 +8,18 @@ export type PluginWiring = {
   claudePluginDirs: string[];
   claudeMcpServers: Record<string, unknown>;
   codexMcpServers: Record<string, unknown>;
+  /** Every server name the person's own configs use for this folder, as Claude Code reads it (WP-101). */
+  namesInUse: string[];
   reports: { path: string; message: string }[];
 };
 
-export const NO_WIRING: PluginWiring = { claudePluginDirs: [], claudeMcpServers: {}, codexMcpServers: {}, reports: [] };
+export const NO_WIRING: PluginWiring = {
+  claudePluginDirs: [],
+  claudeMcpServers: {},
+  codexMcpServers: {},
+  namesInUse: [],
+  reports: [],
+};
 
 export function claudeAdditions(wiring: PluginWiring): ClaudePluginAdditions {
   return { pluginDirs: wiring.claudePluginDirs, mcpServers: wiring.claudeMcpServers };

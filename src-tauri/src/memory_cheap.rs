@@ -9,9 +9,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::history_import::{classify, completions_url, AskOutcome, PostResult};
-use crate::model_router::{
-    may_route, read_key_in, session_token, CustomRoute, KeyTestResult, KEY_SERVICE,
-};
+use crate::key_binding::NOT_STORED_FOR_THIS;
+use crate::model_router::{may_route, session_token, CustomRoute, KeyTestResult};
 
 /// The curator's prompt is one turn plus the facts; anything longer is not this turn.
 pub const PROMPT_LIMIT: usize = 20_000;
@@ -65,14 +64,19 @@ fn assistant_text(body: &str) -> Option<String> {
     }
 }
 
+/// The key goes to this one URL. A redirect is not followed (WP-129): any 3xx answer is the status.
 pub fn post_chat(url: &str, token: &str, body: &str, deadline: Duration) -> PostResult {
-    let agent = ureq::AgentBuilder::new().timeout(deadline).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(deadline)
+        .redirects(0)
+        .build();
     match agent
         .post(url)
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
         .send_string(body)
     {
+        Ok(response) if response.status() >= 300 => PostResult::Status(response.status()),
         Ok(response) => match assistant_text(&response.into_string().unwrap_or_default()) {
             Some(text) => PostResult::Answer(text),
             None => PostResult::Status(200),
@@ -134,56 +138,76 @@ pub fn cheap_complete(
     }
 }
 
-fn key_for(route: &CustomRoute) -> Result<Option<String>, String> {
-    if route.provider == "ollama" {
-        return Ok(None);
+/// The cheap ask for a route the webview gave. The key is read, and a request made, only when the route has
+/// the provider and the address stored with the key (WP-129). Ollama has no key, so it passes through.
+/// `read_item` and `post` are the Keychain and the network; tests stand in for both.
+pub fn ask_in(
+    route: &CustomRoute,
+    prompt: &str,
+    read_item: crate::key_binding::ItemReader,
+    post: impl FnOnce(&str, &str, &str) -> PostResult,
+) -> AskOutcome {
+    if !may_route(route) {
+        return refused("That model can't be used for this.");
     }
-    read_key_in(KEY_SERVICE, &route.custom_model_id)
+    let (route, key) = match crate::key_binding::bound_key(route, read_item) {
+        Ok(Some(found)) => found,
+        Ok(None) => return refused(NOT_STORED_FOR_THIS),
+        Err(_) => return refused("Couldn't reach the Keychain."),
+    };
+    if key.is_none() && route.provider != "ollama" {
+        return refused("No key is saved for that model. Add it under Other models first.");
+    }
+    cheap_complete(&route, prompt, key.as_deref(), post)
 }
 
 #[tauri::command]
 pub async fn memory_cheap_ask(route: CustomRoute, prompt: String) -> Result<AskOutcome, String> {
-    if !may_route(&route) {
-        return Ok(refused("That model can't be used for this."));
-    }
-    let key = match key_for(&route) {
-        Ok(key) => key,
-        Err(_) => return Ok(refused("Couldn't reach the Keychain.")),
-    };
-    if key.is_none() && route.provider != "ollama" {
-        return Ok(refused(
-            "No key is saved for that model. Add it under Other models first.",
-        ));
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        cheap_complete(&route, &prompt, key.as_deref(), |url, token, body| {
-            post_chat(url, token, body, DEADLINE)
-        })
+        ask_in(
+            &route,
+            &prompt,
+            &crate::key_binding::keychain_item,
+            |url, token, body| post_chat(url, token, body, DEADLINE),
+        )
     })
     .await
     .map_err(|_| "The model call didn't finish.".to_string())
+}
+
+fn failed(message: &str) -> KeyTestResult {
+    KeyTestResult {
+        ok: false,
+        message: message.into(),
+    }
+}
+
+/// "Test this model" for a route the webview gave: the saved key and one tiny request, only at the address
+/// stored with the key (WP-129). `read_key` and `test` are the Keychain and the network.
+pub fn test_in(
+    route: &CustomRoute,
+    read_item: crate::key_binding::ItemReader,
+    test: impl FnOnce(&CustomRoute, &str) -> KeyTestResult,
+) -> KeyTestResult {
+    if !may_route(route) {
+        return failed("That model can't be used for this.");
+    }
+    let (route, key) = match crate::key_binding::bound_key(route, read_item) {
+        Ok(Some(found)) => found,
+        Ok(None) => return failed(NOT_STORED_FOR_THIS),
+        Err(_) => return failed("Couldn't reach the Keychain."),
+    };
+    test(&route, key.as_deref().unwrap_or(""))
 }
 
 /// "Test this model" on the Memory screen: the saved key, one tiny request, and the same plain words Other models
 /// shows for a key test.
 #[tauri::command]
 pub async fn memory_cheap_test(route: CustomRoute) -> Result<KeyTestResult, String> {
-    let key = match key_for(&route) {
-        Ok(key) => key,
-        Err(_) => {
-            return Ok(KeyTestResult {
-                ok: false,
-                message: "Couldn't reach the Keychain.".into(),
-            })
-        }
-    };
     tauri::async_runtime::spawn_blocking(move || {
-        crate::model_router::test_key(
-            &route.provider,
-            &route.base_url,
-            &route.model_id,
-            key.as_deref().unwrap_or(""),
-        )
+        test_in(&route, &crate::key_binding::keychain_item, |bound, key| {
+            crate::model_router::test_key(&bound.provider, &bound.base_url, &bound.model_id, key)
+        })
     })
     .await
     .map_err(|_| "The check didn't finish.".to_string())
@@ -200,6 +224,180 @@ mod tests {
             model_id: model.into(),
             custom_model_id: "xai-test1".into(),
             reasoning_effort: None,
+        }
+    }
+
+    fn stored() -> CustomRoute {
+        let mut saved = route("custom", "https://llm.example/v1", "grok-fast");
+        saved.custom_model_id = "custom-1".into();
+        saved
+    }
+
+    const TEST_KEY: &str = "test-key1234";
+
+    /// The Keychain for these tests: one item for `saved`'s account, holding TEST_KEY sealed with `saved`'s address.
+    /// Every read is counted.
+    fn keychain<'a>(
+        saved: &'a CustomRoute,
+        reads: &'a std::cell::Cell<usize>,
+    ) -> impl Fn(&str) -> Result<Option<String>, String> + 'a {
+        let item = crate::key_binding::sealed_item(saved, TEST_KEY);
+        move |account| {
+            reads.set(reads.get() + 1);
+            Ok((account == saved.custom_model_id).then(|| item.clone()))
+        }
+    }
+
+    /// Addresses a key saved for `https://llm.example/v1` must never be sent to.
+    const WRONG_ADDRESSES: &[&str] = &[
+        "https://evil.example/v1",
+        "https://llm.example@evil.example/v1",
+        "https://user@llm.example/v1",
+        "https://llm.example.evil.example/v1",
+        "https://evil.example\\@llm.example/v1",
+        "https://llm.example:8443/v1",
+        "https://llm.example/v1/extra",
+        "https://llm.example/v1?x=1",
+        "http://llm.example/v1",
+    ];
+
+    /// A route the webview could give: the stored one with another address, account or provider, or a key
+    /// with nothing stored.
+    fn strays() -> Vec<CustomRoute> {
+        let saved = stored();
+        let mut out: Vec<CustomRoute> = WRONG_ADDRESSES
+            .iter()
+            .map(|base| {
+                let mut given = saved.clone();
+                given.base_url = (*base).into();
+                given
+            })
+            .collect();
+        let mut other_account = saved.clone();
+        other_account.custom_model_id = "custom-2".into();
+        let mut other_provider = saved.clone();
+        other_provider.provider = "openrouter".into();
+        out.push(other_account);
+        out.push(other_provider);
+        out.push(route("xai", "https://api.x.ai/v1", "grok-fast"));
+        out
+    }
+
+    #[test]
+    fn the_memory_tier_reads_the_key_only_for_the_address_stored_with_it() {
+        let saved = stored();
+        let run = |given: &CustomRoute| {
+            let reads = std::cell::Cell::new(0);
+            let posted = std::cell::RefCell::new(None);
+            let store = keychain(&saved, &reads);
+            let out = ask_in(given, "a prompt", &store, |url, token, _| {
+                *posted.borrow_mut() = Some((url.to_string(), token.to_string()));
+                PostResult::Answer("fine".into())
+            });
+            (out, reads.get(), posted.into_inner())
+        };
+        let mut same = saved.clone();
+        same.base_url = "https://LLM.Example./v1/".into();
+        let (out, reads, posted) = run(&same);
+        assert!(out.ok, "{out:?}");
+        assert_eq!(reads, 1);
+        assert_eq!(
+            posted,
+            Some((
+                "https://llm.example/v1/chat/completions".to_string(),
+                TEST_KEY.to_string()
+            ))
+        );
+        for given in strays() {
+            let (out, _, posted) = run(&given);
+            assert!(!out.ok, "{given:?}");
+            assert_eq!(out.kind, "refused", "{given:?}");
+            assert!(!out.reason.contains(TEST_KEY));
+            assert_eq!(posted, None, "{given:?}");
+        }
+        // Nothing stored for the account: no key, and nothing is sent.
+        let out = ask_in(&saved, "p", &|_: &str| Ok(None), |_, _, _| {
+            PostResult::Unreachable
+        });
+        assert_eq!(out.kind, "refused");
+        // Ollama needs no key, and reads none.
+        let local = route("ollama", "http://localhost:11434", "llama3.2");
+        let out = ask_in(
+            &local,
+            "p",
+            &|_: &str| panic!("Ollama has no key"),
+            |url, _, _| {
+                assert_eq!(url, "http://localhost:11434/v1/chat/completions");
+                PostResult::Answer("ok".into())
+            },
+        );
+        assert!(out.ok);
+        // A failing Keychain and a missing key still say so, once the address matches.
+        let out = ask_in(&saved, "p", &|_: &str| Err("denied".into()), |_, _, _| {
+            PostResult::Unreachable
+        });
+        assert_eq!(out.reason, "Couldn't reach the Keychain.");
+        // A plain key (saved with no address) is unbound: it is never sent.
+        let plain = |_: &str| Ok(Some(TEST_KEY.to_string()));
+        let out = ask_in(&saved, "p", &plain, |_, _, _| PostResult::Unreachable);
+        assert_eq!(out.reason, NOT_STORED_FOR_THIS);
+    }
+
+    #[test]
+    fn the_memory_test_uses_the_key_only_at_the_address_stored_with_it() {
+        let saved = stored();
+        let run = |given: &CustomRoute| {
+            let reads = std::cell::Cell::new(0);
+            let tested = std::cell::RefCell::new(None);
+            let store = keychain(&saved, &reads);
+            let out = test_in(given, &store, |r, key| {
+                *tested.borrow_mut() = Some((r.base_url.clone(), key.to_string()));
+                KeyTestResult {
+                    ok: true,
+                    message: "Connected".into(),
+                }
+            });
+            (out, reads.get(), tested.into_inner())
+        };
+        let mut same = saved.clone();
+        same.base_url = "https://LLM.Example./v1/".into();
+        let (out, reads, tested) = run(&same);
+        assert!(out.ok);
+        assert_eq!(reads, 1);
+        assert_eq!(
+            tested,
+            Some(("https://llm.example/v1".to_string(), TEST_KEY.to_string()))
+        );
+        for given in strays() {
+            let (out, _, tested) = run(&given);
+            assert!(!out.ok, "{given:?}");
+            assert!(
+                out.message == crate::key_binding::NOT_STORED_FOR_THIS
+                    || out.message == "That model can't be used for this.",
+                "{}",
+                out.message
+            );
+            assert_eq!(tested, None, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_memory_call_does_not_follow_a_redirect() {
+        for code in [301_u16, 302, 303, 307, 308] {
+            let (out, seen, followed) = crate::key_binding::redirect_probe(code, |base| {
+                post_chat(
+                    &format!("{base}/v1/chat/completions"),
+                    "test-key1234",
+                    "{}",
+                    Duration::from_secs(5),
+                )
+            });
+            assert!(
+                seen.contains("authorization: bearer test-key1234"),
+                "{seen}"
+            );
+            assert_eq!(out, PostResult::Status(code), "{code}");
+            assert!(!followed, "{code}: the redirect was followed");
         }
     }
 

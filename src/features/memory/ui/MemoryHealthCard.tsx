@@ -8,6 +8,7 @@ import { pausedText } from "../model/memoryBudget";
 const DROP_NAMES: Array<{ key: keyof MemoryHealthView["dropped"]; label: string }> = [
   { key: "secret", label: "with a secret in them" },
   { key: "ungrounded", label: "not backed by the chat" },
+  { key: "forgotten", label: "already deleted by you" },
   { key: "late", label: "from a chat that had already moved on" },
   { key: "invalid", label: "the curator could not read" },
   { key: "orders", label: "it looks like instructions the person never gave" },
@@ -45,6 +46,11 @@ export function MemoryHealthCard({ health, now, paused }: { health: MemoryHealth
           {`${health.dropped[row.key]} ${health.dropped[row.key] === 1 ? "fact was" : "facts were"} not kept: ${row.label}.`}
         </p>
       ))}
+      {health.skillsDropped ? (
+        <p data-health-skills-dropped>
+          {`${health.skillsDropped} ${health.skillsDropped === 1 ? "lesson was" : "lessons were"} not learned, because skill learning is off.`}
+        </p>
+      ) : null}
       <p data-health-fading>
         {health.fading === 0
           ? "Nothing is fading."

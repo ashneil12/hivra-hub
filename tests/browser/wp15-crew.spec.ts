@@ -20,6 +20,9 @@ test("the crew, a decision, a failure, and one digest an hour", async ({ page },
   await expect(row("paused")).toContainText("paused");
   await expect(row("working")).toContainText("claude");
   await expect(row("working")).toContainText("opus");
+  // WP-141: the reason the crew picked a worker shows on its row, and only there.
+  await expect(row("working").locator("[data-crew-why]")).toHaveText("Builder role prefers Codex.");
+  await expect(row("done").locator("[data-crew-why]")).toHaveCount(0);
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __crewCommands: string[] }).__crewCommands))
     .toContain("delegations_list_open");

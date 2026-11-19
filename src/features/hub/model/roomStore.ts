@@ -188,6 +188,7 @@ export function messageMeta(message: ChatMessage): Record<string, unknown> {
     ...(message.status ? { status: message.status } : {}),
     ...(message.pick ? { pick: message.pick } : {}),
     ...(message.notice ? { notice: message.notice } : {}),
+    ...(message.gather ? { gather: message.gather } : {}),
     ...(message.attachments?.length ? { attachments: message.attachments.map(roomAttachment) } : {}),
   };
 }
@@ -299,6 +300,7 @@ export function chatMessage(stored: StoredMessage): ChatMessage {
     ...(notice && typeof notice === "object"
       ? { notice: { ...(typeof notice.mono === "string" ? { mono: notice.mono } : {}), ...(notice.retry === true ? { retry: true } : {}) } }
       : {}),
+    ...(typeof meta.gather === "string" && meta.gather ? { gather: meta.gather } : {}),
     ...(attachments ? { attachments } : {}),
   };
 }

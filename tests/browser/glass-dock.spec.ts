@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-import { openLocalHub } from "./localHub";
+import { openLocalHub, openProjectLead } from "./localHub";
 
 // F2 (r53): a worker chat's "Worked for … · Jump in" bar floats over its transcript on glass, so the last lines scroll
 // on under it, blurred, instead of stopping at a hard edge; and the tab strip is glass over the page under it. Dark and
@@ -84,7 +84,8 @@ test("a worker chat's bar and the tab strip are glass over the scrolling transcr
   );
   await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: the project opens on its home; its first mate, under First mates, opens the coding team's chats.
+  await openProjectLead(page);
   await expect(page.locator(`[data-session-card="${TEAM_CHAT}"]`)).toBeVisible({ timeout: 15_000 });
   await page.evaluate((list) => {
     localStorage.setItem("monocode:dev-delegations", JSON.stringify(list));

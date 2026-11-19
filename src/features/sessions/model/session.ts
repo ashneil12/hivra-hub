@@ -135,6 +135,8 @@ export type HandoffMeta = {
   status: HandoffStatus;
   /** Inject this brief into prompts to `to` until that harness accepts a turn. */
   pending?: boolean;
+  /** WP-121: a timeline marker for a model or provider change. Not a recap. */
+  switchTo?: { harness: HarnessId; model: string; label: string };
 };
 
 /** One persisted question/answer in a completed turn's side conversation. */
@@ -249,6 +251,10 @@ export type AgentRunMeta = {
 export type AttachmentKind = "image" | "audio" | "file";
 
 export type GeneratedImageMeta = {
+  /**
+   * Where the picture's file is, inside the app's generated-images folder. Empty when its file is not on this Mac: a
+   * chat imported from another Mac keeps the picture's name and caption but never its path.
+   */
   path: string;
   name: string;
   mimeType: string;
@@ -339,6 +345,8 @@ export type QueuedMessage = {
   steerWhenBusy?: boolean;
   /** A room's wake or another Mono's message: goes in hidden, as a quiet line, and never shows as a pending bubble. */
   monoNote?: MonoNote;
+  /** WP-243: Ash typed it in the composer himself (Block.byOwner); it keeps that once it leaves the queue. */
+  byOwner?: boolean;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
 };
@@ -363,6 +371,12 @@ export type SessionGoal = {
   providerSessionId?: string;
 };
 
+/**
+ * The queue's state, set only while something is queued. `active`: the head goes in when the chat can take it.
+ * `paused`: it waits for Ash (he stopped the turn, a delivery failed, the chat lost its worktree or is being reset).
+ * `resuming`: Ash resumed a paused queue in a busy chat; it waits for his Continue turn to end, then is `active`.
+ * Moves: `queueStatusOnEnqueue`, `pausedQueueStatus`, `dequeueQueuedMessage` (messageQueue.ts).
+ */
 export type MessageQueueStatus = "active" | "paused" | "resuming";
 
 /** The provider stopped the last turn at a usage limit. */
@@ -401,12 +415,34 @@ export type TurnMetrics = {
 
 /**
  * What a tool approval would run, from the provider's own permission request: the tool's name as the provider calls
- * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes.
+ * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes. A search's `paths`
+ * are where it starts; `server` names the server a resource tool goes to; `args` are the text values an MCP call
+ * carries, which autopilot reads for paths, addresses and red-list words (review M1).
  */
 export type ApprovalCall = {
   tool: string;
   command?: string;
   paths?: string[];
+  server?: string;
+  args?: string[];
+  /** A Grep's glob, as given. Present (even empty or not text) means the search names files by a glob. */
+  glob?: string;
+  /**
+   * Set by the provider that launched the chat, and only by it (never from the tool input): its Bash shell and file tools
+   * stay in the chat folder (Claude Code with CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, round 11). A relative search path,
+   * or a relative shell word, is judged in that folder only when this is set.
+   */
+  folderPinned?: boolean;
+};
+
+/**
+ * WP-243: what covered an approval the app allowed without asking. `quote` is the exact words, found by the app itself in
+ * the source named: one of Ash's own typed messages in this chat, one of his standing answers, or the routine's
+ * instructions.
+ */
+export type CoveredBy = {
+  source: "message" | "rule" | "routine";
+  quote: string;
 };
 
 export type Block = {
@@ -428,6 +464,17 @@ export type Block = {
   providerTurnId?: string;
   /** User turn saved to the session but not submitted to the harness yet. */
   draft?: boolean;
+  /**
+   * WP-243: Ash typed this user turn in the composer himself. Set only by the composer's own send; absent on everything
+   * the app or another chat wrote (briefs, app notes, resumes, wakes) and on every message saved before it existed.
+   * Only such a turn's words count as Ash's own when the app checks an action against what he said.
+   */
+  byOwner?: true;
+  /**
+   * WP-243: the turn this message started was withdrawn: Ash stopped it, or the provider failed it. Its words stay in the
+   * chat but stop counting as cover for an action (ownerWords.ts). A failed turn is also read from its error notice.
+   */
+  withdrawn?: "stopped" | "failed";
   /** This user turn activated MonoCode app access for its thread. */
   monocode?: boolean;
   /** The Plan or Orchestrator mode this user turn was sent in. */
@@ -436,6 +483,12 @@ export type Block = {
   appRequestId?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
+  /**
+   * WP-123: the last message copied into a forked chat. Until a turn is taken, the chat's next send carries a recap of
+   * the chat through this message, because the new provider conversation has never seen it. Saved with the block, so
+   * it survives a restart; cleared once that turn is taken.
+   */
+  forkPoint?: true;
   tool?: {
     callId?: string;
     title?: string;
@@ -455,12 +508,30 @@ export type Block = {
     startedAt?: number;
     /** Epoch ms of the last event about this call: a change, or the provider's heartbeat that it still runs. */
     updatedAt?: number;
+    /**
+     * WP-243: a quit, crash or reload cut this call while it may have been running, so whether it ran is unknown. It is
+     * never run again by the app; the resume note names it so the agent checks its effect first (inFlight.ts).
+     */
+    uncertain?: true;
   };
   approval?: {
     requestId: number;
+    /** Epoch ms the app was asked. A settled chat comes back for a request newer than its settle (chatListInbox.ts). */
+    at?: number;
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;
+    /** WP-150: `call` carries every argument the tool runs with. Only such a call reaches the phone. */
+    callComplete?: boolean;
+    /** WP-122: the child that asked, so the answer is sent to its port. */
+    child?: { name: string; sessionPort: string; detail?: string };
+    /**
+     * WP-243: the frozen action, SHA-256 of the tool's name and full arguments (approvalAction.ts). An allow is bound to
+     * it: a different call under the same id is asked again.
+     */
+    actionHash?: string;
+    /** WP-243: allowed because Ash's own words covered it (ownerWords.ts). The words the app found in the source. */
+    coveredBy?: CoveredBy;
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
@@ -512,9 +583,31 @@ export type Block = {
     /** The chat moved to (or started on) another account of its provider because one hit its limit (E5, accountWaterfall.ts). */
     | "account-moved"
     /** Ash wrote to a chat that is held on his OK for a tool call: it can't answer until he decides (approvalWait.ts). */
-    | "waiting-on-you";
+    | "waiting-on-you"
+    /** WP-177: the chat moved to another machine. The text names the host; the marker is the chat's only saved trace here. */
+    | "teleported"
+    /** WP-177: the chat came back to this Mac from another machine. */
+    | "teleported-back"
+    /** WP-177: a move froze this chat here until it is released or undone (the move's id is in the block id). */
+    | "teleport-frozen"
+    /** WP-177: a moved copy is stored here, not yet activated (the move's id is in the block id). */
+    | "teleport-incoming"
+    /** WP-177: this machine refused a move id for good, so a late copy of that move is turned away. */
+    | "teleport-aborted"
+    /** WP-177: the chat is back here, and the other machine has not confirmed it dropped its copy. */
+    | "teleport-release-owed"
+    /** WP-177: this Mac asked the other machine to freeze, and has not heard back yet. */
+    | "teleport-freeze-asked";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
+  /** Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts): what it showed, kept so it reads the same later. */
+  catchUp?: import("../../asks/model/catchUp").CatchUp;
+  /** Dropwave: what Ash sent to a first mate from the panel beside the one chat (asks/model/besideChat.ts). */
+  besideMessage?: import("../../asks/model/besideChat").BesideMessage;
+  /** Dropwave: the Needs you roll-up in the one chat (needs/model/needsRollup.ts): the items it named, each answered where it sits. */
+  needsRollup?: import("../../needs/model/needsRollup").RollupCard;
+  /** Dropwave: on Ash's message in the one chat, the project the chat was narrowed to when he sent it (asks/model/chiefLens.ts). */
+  lensProject?: string;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */
@@ -611,10 +704,17 @@ export type Session = {
   inboxAsk?: InboxAskContext;
   id: string;
   harness: HarnessId;
+  /**
+   * WP-134b: this chat belongs to a More agents entry. It is not a CLI id, and
+   * `harness` stays one of the eleven so an unknown id cannot become Cursor.
+   */
+  registryAgentId?: string;
   model: string;
   modelSettings: Record<string, string>;
   runtimeMode: RuntimeMode;
   title: string;
+  /** The first message asked for nothing yet (a greeting): the next message names the chat. */
+  titleAwaitsTask?: boolean;
   /** Project / working directory for this session. */
   cwd: string;
   blocks: Block[];
@@ -622,8 +722,20 @@ export type Session = {
   monoTranscript?: { before: number | null; firstBlockId: string | null };
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /**
+   * Set when a move reads a chat that is in the trash. In memory only: a save never writes it.
+   * A copy is not accepted back into a trashed chat.
+   */
+  trashed?: boolean;
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
+  /**
+   * The app holds this chat busy for a background compact (WP-115). It is not
+   * a turn: Quit, the in-flight list and a restore ignore it, so a quit or a
+   * crash during the compact never reads as a cut turn. In-memory only (never
+   * written to the database), and cleared by whatever starts or ends a turn.
+   */
+  idleCompacting?: boolean;
   /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.
@@ -663,6 +775,13 @@ export type Session = {
   ephemeral?: boolean;
   /** Provider-side conversation id (Cursor ACP session id). */
   providerSessionId?: string;
+  /**
+   * WP-177: this chat was moved in (to a host, or back to this Mac) and has no provider conversation yet. Its next turn
+   * sends the chat so far with the text (movedChatPrompt), until the provider gives it a session id.
+   */
+  moveBriefOwed?: boolean;
+  /** WP-177: the machine this chat was moved from, for the first turn's brief. */
+  movedFrom?: string;
   /** Named local credential profile used by Claude or Codex. */
   providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */
@@ -672,6 +791,23 @@ export type Session = {
    * Handoff runs on the next send, not on picker change.
    */
   pendingSwitch?: PendingHarnessSwitch;
+  /**
+   * WP-121: the next send continues this same thread from a portable transcript.
+   * Absent when the switch is a recap, or when the provider session itself continues.
+   */
+  portableResume?: {
+    from: HarnessId;
+    fromModel: string;
+    fromSettings: Record<string, string>;
+    fromProviderSessionId?: string;
+    fromProviderAccountId?: string;
+    transcript: string;
+    /** Messages the person picked for the hand-over; absent means the whole thread, read at send. */
+    messageIds?: string[];
+    markerId: string;
+  };
+  /** WP-121: the line shown until the next send. The marker in the transcript stays. */
+  midThread?: { kind: "resume" | "recap"; line: string };
   /** Last known branch in the session's working copy. */
   branch?: string;
   /** Selected working copy; cwd remains the project identity. */
@@ -680,10 +816,21 @@ export type Session = {
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
   worktreeBase?: string;
+  /**
+   * The person chose this folder for this new chat, so the new chat worktree
+   * setting leaves it alone. Saved with the open tabs, so a reload keeps it.
+   */
+  worktreeDeclined?: boolean;
   /** Internal guard while the first turn creates its selected worktree. */
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
   worktreeRemoved?: boolean;
+  /**
+   * WP-138: one line when files named in .worktreeinclude were copied, and one when
+   * a copy failed. In memory only. Never file contents.
+   */
+  includeNote?: string;
+  includeWarning?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */

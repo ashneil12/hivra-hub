@@ -930,7 +930,8 @@ function findPathInUnknown(value: unknown, depth: number): string | undefined {
   return undefined;
 }
 
-const MONOCODE_TOOL = /^mcp__monocode__[a-z_]+$/;
+// Claude Code says mcp__monocode__<tool>; a Codex lead's mcpToolCall says monocode:<tool>.
+const MONOCODE_TOOL = /^(?:mcp__monocode__|monocode:)[a-z_]+$/;
 
 function looksLikeToolPath(value: string): boolean {
   const text = value.trim();

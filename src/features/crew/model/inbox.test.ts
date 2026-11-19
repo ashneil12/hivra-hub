@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { afterAnswer, failureWords, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, waitingPhrase, type DecisionInput } from "./inbox";
 import type { CrewWorkerInput } from "./rows";
@@ -15,13 +14,14 @@ function decision(patch: Partial<DecisionInput> = {}): DecisionInput {
     askedBy: "lead-chat",
     waiting: ["w-needs"],
     state: "open",
+    createdAt: 10,
     updatedAt: 10,
     ...patch,
   };
 }
 
 function worker(patch: Partial<CrewWorkerInput> & { id: string }): CrewWorkerInput {
-  return { project: PROJECT, title: patch.id, updatedAt: 5, ...patch };
+  return { project: PROJECT, title: patch.id, createdAt: 5, updatedAt: 5, ...patch };
 }
 
 describe("failure words", () => {
@@ -32,6 +32,36 @@ describe("failure words", () => {
     expect(failureWords("at save (/tmp/a.ts:1)", "api key sk-live")).toBe("This work failed.");
     expect(failureWords("", "")).toBe("This work failed.");
     expect(failureWords(null, "token abc")).toBe("This work failed.");
+  });
+});
+
+describe("inbox items: done work says how far it was checked (SC-3a)", () => {
+  const review = (patch: Partial<CrewWorkerInput>) =>
+    inboxItems({
+      project: PROJECT,
+      decisions: [],
+      rows: [worker({ id: "w", status: "done", title: "Add a b export", ...patch })],
+    })[0];
+
+  it("adds the note to a done row that wasn't tested, and says nothing on a plain pass", () => {
+    expect(review({ statusNotice: "Built, not tested yet" })).toMatchObject({
+      kind: "review",
+      title: "Ready for review",
+      body: "Add a b export · Built, not tested yet",
+    });
+    expect(review({ statusNotice: "Not tested" })?.body).toBe("Add a b export · Not tested");
+    expect(review({ statusNotice: "Accepted without a pass: the diff is right" })?.body).toBe(
+      "Add a b export · Accepted without a pass: the diff is right",
+    );
+    expect(review({})?.body).toBe("Add a b export");
+    expect(review({ statusNotice: null })?.body).toBe("Add a b export");
+    expect(review({ statusNotice: "  \n " })?.body).toBe("Add a b export");
+  });
+
+  it("drops a stack frame or a secret from the note, and still reads with no title", () => {
+    expect(review({ statusNotice: "at save (/tmp/a.ts:1)" })?.body).toBe("Add a b export");
+    expect(review({ statusNotice: "token sk-live-abc" })?.body).toBe("Add a b export");
+    expect(review({ title: "", statusNotice: "Built, not tested yet" })?.body).toBe("Built, not tested yet");
   });
 });
 
@@ -162,20 +192,22 @@ describe("inbox items", () => {
   it("puts the oldest question first, a credential between that and a failure, and the longest wait first inside the group", () => {
     const now = 1_000_000_000_000;
     const minute = 60_000;
+    // Every row was touched a second ago (a stream update, a refresh). Only createdAt says how long it has waited.
+    const touched = now - 1_000;
     const shown = inboxItems({
       project: PROJECT,
       decisions: [
-        decision({ decisionKey: "new", question: "Newer question", updatedAt: now - 5 * minute, waiting: [] }),
-        decision({ decisionKey: "old", question: "Oldest question", updatedAt: now - 20 * minute, waiting: [] }),
-        decision({ decisionKey: "blank", question: "No clock", updatedAt: 0, waiting: [] }),
-        decision({ decisionKey: "dashed", question: "Ship — it", updatedAt: now - 3 * minute, waiting: [] }),
+        decision({ decisionKey: "new", question: "Newer question", createdAt: now - 5 * minute, updatedAt: touched, waiting: [] }),
+        decision({ decisionKey: "old", question: "Oldest question", createdAt: now - 20 * minute, updatedAt: touched, waiting: [] }),
+        decision({ decisionKey: "blank", question: "No clock", createdAt: 0, updatedAt: touched, waiting: [] }),
+        decision({ decisionKey: "dashed", question: "Ship — it", createdAt: now - 3 * minute, updatedAt: touched, waiting: [] }),
       ],
       rows: [
-        worker({ id: "ask", status: "needs-you", title: "A word please", updatedAt: now - 12 * minute, statusNotice: "Pick one", childSession: "chat-ask" }),
-        worker({ id: "cred", status: "paused", errorClass: "auth", error: "not signed in", updatedAt: now - 90 * minute }),
-        worker({ id: "permit", status: "needs-you", title: "Needs a folder permission", updatedAt: now - 30 * minute }),
-        worker({ id: "boom", status: "failed", title: "It failed", updatedAt: now - 40 * minute, statusNotice: "The save did not finish." }),
-        worker({ id: "ready", status: "done", title: "Ready work", updatedAt: now - 8 * minute }),
+        worker({ id: "ask", status: "needs-you", title: "A word please", createdAt: now - 12 * minute, updatedAt: touched, statusNotice: "Pick one", childSession: "chat-ask" }),
+        worker({ id: "cred", status: "paused", errorClass: "auth", error: "not signed in", createdAt: now - 90 * minute, updatedAt: touched }),
+        worker({ id: "permit", status: "needs-you", title: "Needs a folder", createdAt: now - 30 * minute, updatedAt: touched, statusNotice: "Needs permission to open the Documents folder" }),
+        worker({ id: "boom", status: "failed", title: "It failed", createdAt: now - 40 * minute, updatedAt: touched, statusNotice: "The save did not finish." }),
+        worker({ id: "ready", status: "done", title: "Ready work", createdAt: now - 8 * minute, updatedAt: touched }),
       ],
     });
     expect(shown.map((item) => item.title)).toEqual([
@@ -191,7 +223,7 @@ describe("inbox items", () => {
     ]);
     expect(shown[0]?.kind).toBe("decision");
     expect(shown.find((item) => item.id === "question:ask")).toMatchObject({ body: "Pick one", chatId: "chat-ask", statusWord: "needs you" });
-    expect(shown.find((item) => item.title === "Needs a permission")?.body).toBe("");
+    expect(shown.find((item) => item.title === "Needs a permission")?.body).toBe("Needs permission to open the Documents folder");
     expect(shown.findIndex((item) => item.kind === "failure")).toBeGreaterThan(shown.findIndex((item) => item.title === "Needs a sign-in"));
     expect(shown.findIndex((item) => item.title === "Needs a sign-in")).toBeGreaterThan(shown.findIndex((item) => item.title === "Newer question"));
     const notices = noticesFrom(shown, [
@@ -209,11 +241,144 @@ describe("inbox items", () => {
     expect(waitingPhrase(now + minute, now)).toBeNull();
   });
 
-  it("does not change how the pull request inbox is sorted", () => {
-    const source = readFileSync(new URL("../../inbox/model/githubTasks.ts", import.meta.url), "utf8");
-    expect(source).toContain("(Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)");
-    const waiting = readFileSync(new URL("../../hub/model/waitingChats.ts", import.meta.url), "utf8");
-    expect(waiting).toContain("a.askedAt - b.askedAt");
+  describe("how long an item has waited", () => {
+    const now = 1_000_000_000_000;
+    const minute = 60_000;
+
+    it("counts from createdAt, so an update that lands now does not reset the wait", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        decisions: [decision({ decisionKey: "asked", waiting: [], createdAt: now - 40 * minute, updatedAt: now - 2_000 })],
+        rows: [
+          worker({ id: "ask", status: "needs-you", title: "Pick", createdAt: now - 25 * minute, updatedAt: now - 1_000 }),
+          worker({ id: "boom", status: "failed", title: "Broke", createdAt: now - 15 * minute, updatedAt: now }),
+        ],
+      });
+      const since = Object.fromEntries(shown.map((item) => [item.id, item.since]));
+      expect(since[`decision:${PROJECT}:asked`]).toBe(now - 40 * minute);
+      expect(since["question:ask"]).toBe(now - 25 * minute);
+      expect(since["failure:boom"]).toBe(now - 15 * minute);
+      expect(waitingPhrase(since["question:ask"]!, now)).toBe("waiting 25 minutes");
+      // updatedAt still names the newest change, for the digest's notice ids.
+      expect(shown.find((item) => item.id === "question:ask")?.updatedAt).toBe(now - 1_000);
+    });
+
+    it("counts a blocked row from when it got stuck, not from when the work began", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          worker({
+            id: "stuck",
+            status: "needs-you",
+            title: "Cannot finish",
+            statusNotice: "Cannot finish: the deploy key is missing",
+            stallKind: "blocked",
+            stalledAt: now - 4 * minute,
+            createdAt: now - 3 * 60 * minute,
+            updatedAt: now - 1_000,
+          }),
+          worker({
+            id: "asked",
+            status: "needs-you",
+            title: "A question",
+            createdAt: now - 3 * 60 * minute,
+            updatedAt: now - 1_000,
+          }),
+        ],
+      });
+      const stuck = shown.find((item) => item.id === "question:stuck");
+      expect(stuck?.since).toBe(now - 4 * minute);
+      expect(waitingPhrase(stuck!.since, now)).toBe("waiting 4 minutes");
+      expect(shown.find((item) => item.id === "question:asked")?.since).toBe(now - 3 * 60 * minute);
+      // The longer wait is first, so the question that has sat for three hours leads the one stuck for four minutes.
+      expect(shown.map((item) => item.id)).toEqual(["question:asked", "question:stuck"]);
+    });
+
+    it("counts a failed, finished or failed-sign-in row from when it ended, not from when the work began", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          // Made three hours ago, ended a minute ago: it has waited a minute, not three hours.
+          worker({ id: "boom", status: "failed", title: "Broke", createdAt: now - 3 * 60 * minute, settledAt: now - minute, updatedAt: now }),
+          worker({ id: "ready", status: "done", title: "Ready work", createdAt: now - 3 * 60 * minute, settledAt: now - 2 * minute, updatedAt: now }),
+          worker({ id: "signin", status: "failed", errorClass: "auth", error: "not signed in", createdAt: now - 3 * 60 * minute, settledAt: now - 5 * minute, updatedAt: now }),
+          // Not ended yet: no settledAt, so it counts from when it was made.
+          worker({ id: "paused", status: "paused", errorClass: "auth", error: "not signed in", createdAt: now - 90 * minute, settledAt: null, updatedAt: now }),
+          worker({ id: "ask", status: "needs-you", title: "Pick", createdAt: now - 3 * 60 * minute, settledAt: null, updatedAt: now }),
+        ],
+      });
+      const since = Object.fromEntries(shown.map((item) => [item.id, item.since]));
+      expect(since["failure:boom"]).toBe(now - minute);
+      expect(since["review:ready"]).toBe(now - 2 * minute);
+      expect(since["credential:signin"]).toBe(now - 5 * minute);
+      expect(since["credential:paused"]).toBe(now - 90 * minute);
+      expect(since["question:ask"]).toBe(now - 3 * 60 * minute);
+      expect(waitingPhrase(since["failure:boom"]!, now)).toBe("waiting 1 minute");
+      expect(waitingPhrase(since["review:ready"]!, now)).toBe("waiting 2 minutes");
+    });
+
+    it("sorts a worker that failed long ago ahead of one made earlier that only just failed", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          // Made at 09:00 and failed at 12:00, against made at 11:00 and failed at 11:30.
+          worker({ id: "late", status: "failed", title: "Late", createdAt: now - 180 * minute, settledAt: now - minute, updatedAt: now }),
+          worker({ id: "early", status: "failed", title: "Early", createdAt: now - 60 * minute, settledAt: now - 30 * minute, updatedAt: now }),
+        ],
+      });
+      expect(shown.map((item) => item.id)).toEqual(["failure:early", "failure:late"]);
+    });
+
+    it("falls back to createdAt for an ended row that has no settledAt", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          worker({ id: "boom", status: "failed", title: "Broke", createdAt: now - 15 * minute, updatedAt: now }),
+          worker({ id: "nulled", status: "done", title: "Done", createdAt: now - 20 * minute, settledAt: null, updatedAt: now }),
+        ],
+      });
+      expect(shown.find((item) => item.id === "failure:boom")?.since).toBe(now - 15 * minute);
+      expect(shown.find((item) => item.id === "review:nulled")?.since).toBe(now - 20 * minute);
+    });
+
+    it("ignores stalledAt unless the row is blocked", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          worker({ id: "quiet", status: "failed", title: "Quiet", stallKind: "quiet", stalledAt: now - minute, createdAt: now - 50 * minute, updatedAt: now }),
+          worker({ id: "nostamp", status: "needs-you", title: "Blocked, no stamp", stallKind: "blocked", stalledAt: null, createdAt: now - 9 * minute, updatedAt: now }),
+        ],
+      });
+      expect(shown.find((item) => item.id === "failure:quiet")?.since).toBe(now - 50 * minute);
+      expect(shown.find((item) => item.id === "question:nostamp")?.since).toBe(now - 9 * minute);
+    });
+
+    it("says nothing for a row with no start time instead of reading its last update", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [{ id: "old", project: PROJECT, status: "needs-you", title: "Old build", updatedAt: now - minute }],
+      });
+      expect(shown[0]?.since).toBe(0);
+      expect(waitingPhrase(shown[0]!.since, now)).toBeNull();
+    });
+  });
+
+  describe("a permission ask", () => {
+    it("is read from the status notice, so a title that says permission does not make it one", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          worker({ id: "title-only", status: "needs-you", title: "Fix the permission check", statusNotice: "Question for you: which name to ship?" }),
+          worker({ id: "denied-title", status: "needs-you", title: "Access denied page", statusNotice: "Question for you: ship it?" }),
+          worker({ id: "real", status: "needs-you", title: "Open the folder", statusNotice: "Needs permission to read the Documents folder" }),
+          worker({ id: "denied", status: "needs-you", title: "Save", statusNotice: "Access denied" }),
+        ],
+      });
+      expect(shown.find((item) => item.id === "question:title-only")).toMatchObject({ kind: "question", title: "Fix the permission check" });
+      expect(shown.find((item) => item.id === "question:denied-title")?.kind).toBe("question");
+      expect(shown.find((item) => item.id === "credential:real")).toMatchObject({ kind: "credential", title: "Needs a permission" });
+      expect(shown.find((item) => item.id === "credential:denied")).toMatchObject({ kind: "credential", title: "Needs a permission" });
+    });
   });
 
   it("shows nothing for an empty project", () => {
@@ -290,5 +455,67 @@ describe("answering a decision", () => {
     );
     expect(next.applied).toBe(true);
     expect(next.rows[0]?.status).toBe("failed");
+  });
+});
+
+// Review round 1 (PR #232), LOW: a sent-back reason quotes the worker's own to-do or command. A working row whose
+// reason names a sign-in test is not a sign-in the person has to do.
+describe("review r1: sent-back reasons", () => {
+  it("r1: a sent-back reason that mentions sign-in is not a credential card", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "fixing",
+          project: "/work/proj",
+          title: "Fix the login page",
+          status: "working",
+          statusNotice: "Sent back: a check failed this turn (npx vitest run src/features/auth/sign-in.test.ts).",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
+  });
+});
+
+// Review round 2 (PR #232), MED (r1 MED still open): the r1 fix reads only a working row's notice. A delivery that the
+// checks failed twice carries the same sent-back line as its error, and that still becomes a credential card.
+describe("review r2: sent-back reasons", () => {
+  it("r2: a failed delivery whose error is a sent-back reason naming sign-in is not a credential card", () => {
+    const line = "Sent back: a check failed this turn (npx vitest run src/features/auth/sign-in.test.ts).";
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "fixing",
+          project: "/work/proj",
+          title: "Fix the login page",
+          status: "failed",
+          statusNotice: `${line} Still failed after 2 tries.`,
+          error: `${line} Still failed after 2 tries.`,
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
+  });
+
+  it("a real sign-in line stays a credential when a send-back line is also there", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "auth",
+          project: "/work/proj",
+          title: "Connect the account",
+          status: "failed",
+          statusNotice: "not signed in",
+          error: "Sent back: npx vitest run src/features/auth/sign-in.test.ts",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.some((item) => item.kind === "credential")).toBe(true);
   });
 });

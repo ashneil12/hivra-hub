@@ -600,7 +600,7 @@ it("opens the full turn activity from the footer beside copy and notes", () => {
   ).toBe("true");
 });
 
-it("keeps streamed progress inside the status row and reveals the final reply when done", () => {
+it("shows streaming assistant text while keeping previous tool work compact", () => {
   const opening: Block[] = [
     { id: "user", role: "user", text: "Inspect" },
     { id: "intro", role: "assistant", text: "I will inspect the files." },
@@ -621,7 +621,7 @@ it("keeps streamed progress inside the status row and reveals the final reply wh
   render(narrated, { busy: true });
   settleTicker();
   expect(status()).toBe("Writing");
-  expect(container.textContent).not.toContain("Private streamed progress");
+  expect(container.textContent).toContain("Private streamed progress");
   const worked: Block[] = [
     ...narrated,
     tool("second"),
@@ -636,7 +636,7 @@ it("keeps streamed progress inside the status row and reveals the final reply wh
   settleTicker();
   expect(status()).toBe("Writing");
   expect(container.querySelector("[data-mono-work]")).toBe(group);
-  expect(container.querySelector('[data-chat-message="answer"]')).toBeNull();
+  expect(container.querySelector('[data-chat-message="answer"]')).not.toBeNull();
   render(worked.map((block) => ({ ...block, streaming: false })));
   settleTicker();
   expect(status()).toBeUndefined();
@@ -681,7 +681,7 @@ it("keeps pending edit approvals actionable beside the compact status", () => {
   expect(onApproval).toHaveBeenCalledWith(42, "allow");
 });
 
-it("opens live activity from the header ticker before any tool, while a direct answer waits for completion", () => {
+it("opens live activity from the header ticker and streams a direct answer", () => {
   const user: Block = { id: "user", role: "user", text: "Hello" };
   const props = {
     busy: true,
@@ -717,7 +717,7 @@ it("opens live activity from the header ticker before any tool, while a direct a
   render([user, answer], props);
   settleTicker();
   expect(container.querySelector("[data-mono-work]")).toBe(header);
-  expect(container.textContent).not.toContain(answer.text);
+  expect(container.textContent).toContain(answer.text);
   expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
   act(() => activity.click());
   expect(props.onShowWork).toHaveBeenLastCalledWith("user", [user, answer]);
@@ -808,7 +808,7 @@ it("keeps interrupted work inspectable without presenting its opening as a final
   expect(onShowWork).toHaveBeenCalledWith("user", blocks);
 });
 
-it("uses the header to show questions and background work while answers are hidden", () => {
+it("uses the header for work status while assistant text remains visible", () => {
   const blocks: Block[] = [
     { id: "user", role: "user", text: "Inspect" },
     {
@@ -820,7 +820,7 @@ it("uses the header to show questions and background work while answers are hidd
   ];
   render(blocks, { busy: true, pendingQuestion: true });
   expect(status()).toBe("Waiting for your answers");
-  expect(container.textContent).not.toContain("I have a question.");
+  expect(container.textContent).toContain("I have a question.");
   render(blocks, { busy: true, backgroundTasks: ["Review"] });
   settleTicker();
   expect(status()).toBe("Waiting on a background task");
@@ -978,7 +978,7 @@ it("shows answers to mid-turn follow-ups immediately and retains them during lat
 });
 
 it.each(["pending", "paused", "failed"] as const)(
-  "keeps narration hidden until a %s follow-up is delivered",
+  "keeps current reply visible even when a %s follow-up is not delivered",
   (delivery) => {
     const blocks: Block[] = [
       { id: "user", role: "user", text: "Review the PR", startedAt: 1000 },
@@ -991,7 +991,7 @@ it.each(["pending", "paused", "failed"] as const)(
       busy: true,
       messageDeliveries: new Map([["follow-up", { status: delivery }]]),
     });
-    expect(container.textContent).not.toContain("Checking browser security.");
+    expect(container.textContent).toContain("Checking browser security.");
     render(blocks, { busy: true, messageDeliveries: new Map() });
     expect(container.textContent).toContain("Checking browser security.");
     expect(container.textContent).not.toContain("I will inspect the files.");

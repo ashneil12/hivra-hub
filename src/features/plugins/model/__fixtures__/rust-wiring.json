@@ -75,7 +75,7 @@
     },
     {
       "path": "app-data/plugins/lock.json",
-      "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"demo\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"local\",\n        \"location\": \"<TMP>/src/demo\"\n      },\n      \"integrity\": \"sha256-e97b8408ea10317cf1fb952e31789617ba209d3485a48dd78af001a5b6cda23c\"\n    }\n  }\n}\n"
+      "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"demo\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"local\",\n        \"location\": \"<TMP>/src/demo\"\n      },\n      \"integrity\": \"sha256-3dbb102c72e9344ecd71a919255efc6b36efc5f7e281687a8921647035a6bdab\"\n    }\n  }\n}\n"
     },
     {
       "dir": true,
@@ -150,6 +150,7 @@
         "command": "<CLI>"
       }
     },
+    "namesInUse": [],
     "reports": []
   }
 }

@@ -18,6 +18,17 @@ const callOf = (block: Block) => {
 const resultOf = (block: Block) =>
   JSON.stringify([callOf(block), block.tool?.status ?? "", (block.tool?.detail ?? "").slice(0, 4_000)]);
 
+/**
+ * A shell step that waits by sleeping (`sleep 60`, `sleep 30 && gh pr checks`, `while ...; do sleep 10; done`). Each one
+ * is a model turn spent on nothing; a timer or ending the turn waits for free (contract.md "Waiting").
+ */
+const SLEEP_WAIT = /(?:^|[\s;&|(`])sleep\s+\d/;
+export function isSleepWait(block: Block): boolean {
+  if (block.role !== "tool" || !block.tool) return false;
+  const command = block.tool.command ?? block.tool.preview?.query ?? block.text ?? block.tool.title ?? "";
+  return SLEEP_WAIT.test(command);
+}
+
 export function lookAt(chat: WorkerChat): WorkerLook {
   const turn = currentTurn(chat.blocks);
   const tools = turn.filter((block) => block.role === "tool" && block.tool);
@@ -31,6 +42,7 @@ export function lookAt(chat: WorkerChat): WorkerLook {
     for (let i = finished.length - 1; i >= 0 && resultOf(finished[i]) === tail; i--) count++;
     if (count > 1) repeat = { title: toolCallLabel(finished[finished.length - 1], chat.cwd), count };
   }
+  const sleepWaits = finished.filter(isSleepWait).length;
   const distinct = new Set(tools.map(callOf));
   const said = turn.filter((block) => block.role === "assistant" && block.text.trim()).length;
   const approval = turn.some((block) => !!block.approval && !block.approval.decided);
@@ -44,6 +56,7 @@ export function lookAt(chat: WorkerChat): WorkerLook {
     resumeStopped: lastBlock?.notice === "resume-stopped",
     ...(running ? { runningTool: toolCallLabel(running, chat.cwd) } : {}),
     ...(repeat ? { repeat } : {}),
+    ...(sleepWaits ? { sleepWaits } : {}),
     steps: distinct.size + said,
     ...(providerError ? { providerError } : {}),
   };

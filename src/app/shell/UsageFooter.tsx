@@ -26,6 +26,7 @@ import {
   HARNESS_TITLE,
   type HarnessId,
 } from "../../features/sessions/model/session";
+import { loadRegistryDocument } from "../../features/registry/model/registryList";
 import {
   loginHarness,
   supportsHarnessLogin,
@@ -62,6 +63,8 @@ const CLOCK_MS = 30_000;
 export type UsageFooterSession = {
   id?: string;
   harness: HarnessId;
+  /** WP-134b: this chat is a More agents entry, not the CLI named by `harness`. */
+  registryAgentId?: string;
   model?: string;
   authRequired?: boolean;
   providerAccountId?: string;
@@ -608,6 +611,21 @@ function SessionChip({
       setLoginState("error");
     }
   };
+
+  // WP-134b: the placeholder CLI's sign-in is not this chat.
+  if (session.registryAgentId) {
+    const name =
+      loadRegistryDocument().agents.find((agent) => agent.id === session.registryAgentId)?.name ||
+      "More agents";
+    return (
+      <span
+        className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
+        title={name}
+      >
+        <span>{name}</span>
+      </span>
+    );
+  }
 
   // On the DeepSeek launcher Claude's plan isn't what this chat spends.
   if (session.harness === "claude" && claudeRunsOnSubscriptionBridge()) return null;

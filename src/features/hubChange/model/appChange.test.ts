@@ -32,7 +32,7 @@ it("Send to MonoCode Hub lead puts Ash's words in that Lead's own chat, through 
   expect(sent[0][0]).toBe("s-hub");
   expect(sent[0][1]).toContain("Make the sidebar icons bigger");
   expect(sent[0][1]).toMatch(/worktree[\s\S]*copy of the app[\s\S]*Ship/);
-  expect(sent[0][1]).toContain("(sent from Change the hub)");
+  expect(sent[0][1]).toContain("(sent from Change the app)");
 });
 
 it("the old Harness lead's seat is not adopted; a Lead with no chat yet is opened and the words follow once it has one", async () => {
@@ -75,14 +75,13 @@ it("on screen: the explanation and Send to MonoCode Hub lead instead of a flat n
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  await act(async () => vi.waitFor(() => expect(host.querySelector("[data-hub-change-app-change]")).not.toBeNull()));
   const card = host.querySelector("[data-hub-change-app-change]")!;
   expect(card.textContent).toContain("This changes the app itself");
   expect(card.textContent).toContain("that's how a screen looks.");
   const send = card.querySelector("[data-hub-change-send-lead]") as HTMLButtonElement;
   expect(send.textContent).toBe("Send to MonoCode Hub lead");
   await act(async () => send.click());
-  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-  expect(sent).toEqual(["s-hub"]);
+  await act(async () => vi.waitFor(() => expect(sent).toEqual(["s-hub"])));
   expect(host.querySelector("[data-hub-change-sent-lead]")!.textContent).toContain("Sent to Hub lead");
 });

@@ -21,6 +21,10 @@ export type HubProject = {
   folder: string | null;
   /** Shelved in Ash OS's registry. Not on the strip. */
   parked?: boolean;
+  /** Ash turned on "Share with my team" for this project. Only his click sets it. */
+  shared?: boolean;
+  /** What it is, in a sentence (New project's interview, the local store's `oneLine`). */
+  oneLine?: string;
 };
 
 /** Everything a project has, listed where Monocode's sidebar lists Projects. */
@@ -129,7 +133,13 @@ export type HubQuestion = {
 export type OlderDismissed = { dismissed: number; receipt: string };
 
 /** Ash's answer: an option's index and/or his words, or one quick answer alone. */
-export type HubAnswer = { choice?: number; text?: string; quick?: "agree" | "drop" | "park" };
+export type HubAnswer = {
+  choice?: number;
+  text?: string;
+  quick?: "agree" | "drop" | "park";
+  /** The Page that sent it. Its answer is stored as `page:<id>`, never as the person's (decisions.rs `person_only`). */
+  from?: string;
+};
 
 /** An answer on its way or back: "Sending…" in the row, then the receipt; the row ticks off only if it closed. */
 export type AnswerState = { sending: boolean; receipt?: string; problem?: string; closed?: boolean };
@@ -324,6 +334,8 @@ export type ChatMessage = {
    * Monos answering get them as they would in their own chat, and they are still there after a restart.
    */
   attachments?: RoomAttachment[];
+  /** WP-245: one of several answers to the same message of Ash's that landed together (roomConductor.ts Gather). */
+  gather?: string;
 };
 
 /** A file on a room message: where it is on disk and what it is (never its bytes; those are read when a turn sends it). */

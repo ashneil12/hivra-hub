@@ -29,7 +29,7 @@ import {
   settingValue,
   withModel,
 } from "./modelChoice";
-import { ACCESS_MODES } from "./access";
+import { ACCESS_MODES, accessIcon } from "./access";
 import { useSessionChoice } from "./sessionChoice";
 import type { CatalogModel, ModelPick, RuntimeMode } from "./types";
 import { useModelCatalog } from "./useModelCatalog";
@@ -54,6 +54,8 @@ type Option = {
     warm?: boolean;
   }[];
   onPick: (value: string) => void;
+  /** The current value's name when it is not among the choices (fx's Supervised, WP-175). */
+  valueLabel?: string;
   /** Drawn as the effort slider, or as a switch between its two choices, off then on. */
   control?: "slider" | "switch";
 };
@@ -80,8 +82,12 @@ function useModelPicker(
   const effort = effortSetting(model);
   const fast = fastSetting(model);
   const others = otherSettings(model);
-  // fx has no permissions, so the desktop shows no picker for it.
-  const showAccess = choice?.harness !== "fx";
+  // The modes the desktop offers this chat's CLI, with that CLI's names (WP-175). Older desktops send none.
+  // Every mode the chat's CLI runs with, named as that CLI names it; only the offered ones are choices.
+  const accessModes = choice
+    ? (catalog?.runtimeModesByHarness?.[choice.harness] ??
+      catalog?.runtimeModes?.map((mode) => ({ ...mode, offered: true })))
+    : undefined;
   const providerAccounts =
     catalog?.accounts?.filter(
       (account) => account.provider === choice?.harness,
@@ -174,19 +180,22 @@ function useModelPicker(
           choices: setting.options,
           onPick: (next: string) => setSetting(setting.id, next),
         })),
-        ...(showAccess
+        ...(accessModes
           ? [
               {
                 id: "access",
                 label: "Access",
                 value: access,
-                choices: ACCESS_MODES.map((mode) => ({
-                  value: mode.id,
-                  label: mode.label,
-                  hint: mode.hint,
-                  icon: mode.icon,
-                  warm: mode.id === "full-access",
-                })),
+                valueLabel: accessModes.find((mode) => mode.id === access)?.label,
+                choices: accessModes
+                  .filter((mode) => mode.offered)
+                  .map((mode) => ({
+                    value: mode.id,
+                    label: mode.label,
+                    hint: mode.hint,
+                    icon: accessIcon(mode.id),
+                    warm: mode.id === "full-access",
+                  })),
                 onPick: (next: string) => pickAccess(next as RuntimeMode),
               },
             ]
@@ -200,7 +209,8 @@ function useModelPicker(
         ? option.value === fast.on
           ? "Fast"
           : null
-        : option.choices.find((entry) => entry.value === option.value)?.label,
+        : (option.choices.find((entry) => entry.value === option.value)?.label ??
+          option.valueLabel),
     )
     .filter(Boolean)
     .join(" · ");
@@ -213,7 +223,7 @@ function useModelPicker(
     pick,
     options,
     summary,
-    fullAccess: showAccess && access === "full-access",
+    fullAccess: access === "full-access",
     providerAccounts,
     accountId,
     selectAccount,

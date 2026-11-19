@@ -5,6 +5,7 @@ import {
 } from "../../../features/sessions/model/models";
 import type { HarnessId } from "../../../features/sessions/model/session";
 import {
+  BACKGROUND_HOLD_CEILING_MS,
   HARNESS_IDLE_PARK_MS,
   bindHarnessSession,
   canCompactHarnessContext,
@@ -17,11 +18,14 @@ import {
   isLiveHarness,
   listHarnesses,
   refreshHarnessCatalogs,
+  canSteerHarnessSession,
   registerHarness,
   resetHarnessIdlePark,
+  routeHarnessSession,
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
+import { CHAT_NEEDS_FOLDER } from "./chatFolder";
 import type { SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
@@ -329,6 +333,41 @@ describe("harness registry", () => {
     expect(pi).not.toHaveBeenCalled();
   });
 
+  // A chat whose folder was cleared on import (docs/PORTABLE.md) starts nothing, on any provider.
+  it.each(["claude", "codex", "cursor", "pi"] as const)(
+    "refuses a %s turn for a chat with no folder before the provider hears of it",
+    async (harness) => {
+      const sendTurn = vi.fn(async () => undefined);
+      const compactContext = vi.fn(async () => undefined);
+      registerHarness(stub(harness, { sendTurn, compactContext }));
+      for (const cwd of ["", "   "]) {
+        await expect(
+          sendHarnessTurn({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            text: "hi",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+        await expect(
+          compactHarnessContext({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+      }
+      expect(sendTurn).not.toHaveBeenCalled();
+      expect(compactContext).not.toHaveBeenCalled();
+    },
+  );
+
   it("parks a live child a few minutes after the turn settles", async () => {
     vi.useFakeTimers();
     const stopSession = vi.fn(async () => undefined);
@@ -350,6 +389,129 @@ describe("harness registry", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(stopSession).toHaveBeenCalledWith("s1");
   });
+  describe("idle park with background work", () => {
+    const turn = (sessionId: string) =>
+      sendHarnessTurn({
+        harness: "claude",
+        sessionId,
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: () => undefined,
+      });
+
+    it("does not park a chat whose CLI still runs a backgrounded shell or subagent", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      let busy = true;
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: () => busy,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+
+      await turn("s1");
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 5 * 60_000);
+      expect(stopSession).not.toHaveBeenCalled();
+
+      // Once the work ends, the chat is parked after a full idle time, not at once.
+      busy = false;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopSession).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 60_000);
+      expect(stopSession).toHaveBeenCalledWith("s1");
+    });
+
+    it("parks a chat whose background work never ends, after the hold ceiling, and says so once", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      registerHarness(
+        stub("opencode", {
+          stopSession,
+          hasBackgroundWork: () => true,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+      const events: { type: string; text?: string }[] = [];
+      await sendHarnessTurn({
+        harness: "opencode",
+        sessionId: "stuck",
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: (event) => events.push(event),
+      });
+
+      // The first check that finds the work starts the hold: HARNESS_IDLE_PARK_MS after the turn settles.
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + BACKGROUND_HOLD_CEILING_MS - 30_000);
+      expect(stopSession).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "status")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopSession).toHaveBeenCalledTimes(1);
+      expect(stopSession).toHaveBeenCalledWith("stuck");
+      const statuses = events.filter((event) => event.type === "status");
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]!.text).toMatch(/background work/i);
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS * 2);
+      expect(stopSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps holding a Claude chat past the ceiling while Claude still reports its own background work", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      let busy = true;
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: () => busy,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+      const events: { type: string; text?: string }[] = [];
+      await sendHarnessTurn({
+        harness: "claude",
+        sessionId: "long-build",
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: (event) => events.push(event),
+      });
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + BACKGROUND_HOLD_CEILING_MS * 2);
+      expect(stopSession).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "status")).toEqual([]);
+
+      busy = false;
+      await vi.advanceTimersByTimeAsync(30_000 + HARNESS_IDLE_PARK_MS + 60_000);
+      expect(stopSession).toHaveBeenCalledWith("long-build");
+    });
+
+    it("skips a busy chat when the warm limit parks the longest-idle child", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: (sessionId) => sessionId === "busy",
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => 1, keep: () => false });
+
+      await turn("busy");
+      await turn("quiet");
+      await turn("other");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopSession.mock.calls).toEqual([["quiet"], ["other"]]);
+    });
+  });
+
   describe("idle limit", () => {
     const turn = (sessionId: string) =>
       sendHarnessTurn({
@@ -532,5 +694,90 @@ describe("harness registry", () => {
     bindHarnessSession("claude", "s2", "sess_2", "/repo");
     expect(restoreGoal).toHaveBeenCalledTimes(1);
     expect(restoreGoal).toHaveBeenCalledWith("s1", goal);
+  });
+});
+
+describe("More agents session route", () => {
+  it("sends a routed chat's turn to its route, never to the harness it was saved with", async () => {
+    const cursorTurns: string[] = [];
+    registerHarness(stub("cursor", { async sendTurn(input) { cursorTurns.push(input.text); } }));
+    const routed: string[] = [];
+    routeHarnessSession("chat-routed", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      async sendTurn(input: SendTurnInput) {
+        routed.push(input.text);
+      },
+    });
+    try {
+      const input = {
+        sessionId: "chat-routed",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId };
+      await sendHarnessTurn(input);
+      expect(routed).toEqual(["hello"]);
+      expect(cursorTurns).toEqual([]);
+      expect(canSteerHarnessSession("cursor", "chat-routed")).toBe(false);
+    } finally {
+      routeHarnessSession("chat-routed", null);
+    }
+  });
+
+  it("binds a restored routed chat's ACP session to its route, never to the harness it was saved with", () => {
+    const claudeBinds: string[] = [];
+    registerHarness(stub("claude", { bindSession: (threadId) => { claudeBinds.push(threadId); } }));
+    const routedBinds: string[] = [];
+    routeHarnessSession("chat-restored", {
+      ...stub("claude"),
+      id: "more-agents",
+      canSteer: false,
+      bindSession: (threadId, providerSessionId) => {
+        routedBinds.push(`${threadId}:${providerSessionId}`);
+      },
+    });
+    try {
+      bindHarnessSession("claude", "chat-restored", "acp-42", "/tmp");
+      expect(routedBinds).toEqual(["chat-restored:acp-42"]);
+      expect(claudeBinds).toEqual([]);
+    } finally {
+      routeHarnessSession("chat-restored", null);
+    }
+  });
+
+  it("does not idle-park a routed chat whose route still runs background work", async () => {
+    vi.useFakeTimers();
+    const cursorStop = vi.fn(async () => undefined);
+    registerHarness(stub("cursor", { stopSession: cursorStop }));
+    const routedStop = vi.fn(async () => undefined);
+    routeHarnessSession("chat-routed-bg", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      hasBackgroundWork: () => true,
+      stopSession: routedStop,
+    });
+    configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+    try {
+      await sendHarnessTurn({
+        sessionId: "chat-routed-bg",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId });
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 5 * 60_000);
+      expect(routedStop).not.toHaveBeenCalled();
+      expect(cursorStop).not.toHaveBeenCalled();
+    } finally {
+      routeHarnessSession("chat-routed-bg", null);
+    }
   });
 });

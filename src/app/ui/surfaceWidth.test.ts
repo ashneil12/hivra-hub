@@ -37,18 +37,20 @@ describe("main surfaces fill the width", () => {
     expect(src).toMatch(/<RoomText text=\{msg\.text\} className=\{`max-w-\[75ch\]/);
   });
 
-  it("a Mono's 1:1 fills the width like a room: transcript, composer, tool cards and code blocks (Critiquito 22 Oct)", () => {
+  it("a Mono's 1:1 centres its reading column with the composer (Ash, 13 Nov)", () => {
     const transcript = read("src/features/sessions/ui/AgentTranscript.tsx");
     // The Mono (bottom-aligned) column: no centred cap, the room's side padding with the rows' own px-4.
     const mono = transcript.split("\n").find((line) => line.includes(`className="chat-reading-limit`))!;
     expect(mono).toBeDefined();
-    expect(mono).not.toMatch(CAPPED);
-    expect(mono).not.toMatch(/\bmax-w-/);
+    expect(mono).toContain("mx-auto");
+    expect(mono).toContain("max-w-4xl");
     expect(mono).toMatch(/\bw-full\b.*\bpx-2\b.*\bxl:px-4\b/);
     // The composer, in the 1:1 and in a room, is never a centred capped box; the 1:1 dock uses the room's padding.
     expect(read("src/features/monos/ui/MonoComposer.tsx").split("\n").filter((line) => CAPPED.test(line))).toEqual([]);
     const pane = read("src/features/sessions/ui/SessionPane.tsx");
-    expect(pane).toContain('className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}');
+    // Dropwave (Ash 11 Nov): where every chat has one look, a first mate's chat takes the general chat's box instead.
+    expect(pane).toContain("const monoBox = !!agent && !ONE_CHAT_LOOK;");
+    expect(pane).toContain('className={monoBox ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}');
     expect(read("src/features/hub/ui/GroupChatView.tsx")).toContain('<div className="w-full shrink-0 px-6 pb-3 xl:px-8">');
     // A worker's delegated-chat card and its stuck card fill too (they capped at 768px).
     const notices = read("src/features/monos/ui/DelegationNotices.tsx");
@@ -67,7 +69,7 @@ describe("main surfaces fill the width", () => {
   });
 
   it("side padding is modest: 24px, 32px from xl", () => {
-    expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 py-6 xl:px-8" data-pages-list');
+    expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 pt-5 pb-10 xl:px-8" data-pages-list');
   });
 
   it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {

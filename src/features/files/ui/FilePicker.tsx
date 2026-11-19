@@ -59,7 +59,8 @@ const NOTHING_OPEN: PaletteContext = {
   terminal: false,
   chat: false,
   busy: false,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: false,
 };
 
@@ -266,8 +267,12 @@ export function FilePicker({
     setPaletteState(next);
     savePaletteState(next);
     onClose();
-    if (onRunCommand && row) onRunCommand(row);
-    else if (onRunAction && row?.binding === "View: Reload") onRunAction("reload");
+    // Run it once the palette has unmounted and focus has left its input, as
+    // the shortcut would: Switch model refuses while focus is in a picker.
+    window.setTimeout(() => {
+      if (onRunCommand && row) onRunCommand(row);
+      else if (onRunAction && row?.binding === "View: Reload") onRunAction("reload");
+    }, 0);
   };
 
   const onSearchKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {

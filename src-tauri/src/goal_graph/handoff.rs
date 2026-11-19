@@ -61,6 +61,34 @@ pub fn safe_segment(task_id: &str) -> Result<&str, Refusal> {
     Ok(task_id)
 }
 
+/// Whether a project-relative path is in the folder a worker writes its handoff in (`.hivra/handoff`), and nothing
+/// wider: another file under `.hivra` is the project's own and keeps its place in a worker's changes.
+///
+/// A handoff is the app's note about a worker's work, read in the worker's checkout when the lead accepts the task. It
+/// is never part of what the worker changed, so integration leaves it out and does not wait for it to have been
+/// captured at a tool boundary (a note written by the shell never is). Separators are normalised, `.` parts are
+/// dropped and case is folded on Windows, as `containment_key` does; a path with a `..` is not trusted to be one.
+pub fn is_handoff(relative: &str) -> bool {
+    let slashed = relative.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in slashed.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => return false,
+            other => parts.push(other),
+        }
+    }
+    let dir: Vec<&str> = DIR.split('/').collect();
+    parts.len() >= dir.len()
+        && parts.iter().zip(&dir).all(|(left, right)| {
+            if cfg!(windows) {
+                left.eq_ignore_ascii_case(right)
+            } else {
+                left == right
+            }
+        })
+}
+
 /// The handoff's path inside a checkout, without touching the disk.
 pub fn relative_path(task_id: &str) -> Result<PathBuf, Refusal> {
     Ok(Path::new(DIR).join(format!("{}.md", safe_segment(task_id)?)))
@@ -205,6 +233,36 @@ mod tests {
         }
         assert_eq!(safe_segment("task-1").unwrap(), "task-1");
         assert_eq!(safe_segment("9f0f-1").unwrap(), "9f0f-1");
+    }
+
+    #[test]
+    fn only_the_handoff_folder_is_a_handoff_path() {
+        // What integration leaves out of a worker's changes: the folder this module reads from, nothing wider.
+        for handoff in [
+            ".hivra/handoff/task-1.md",
+            ".hivra/handoff/sub/note.md",
+            ".hivra/handoff",
+            ".hivra\\handoff\\task-1.md",
+            "./.hivra/handoff/task-1.md",
+        ] {
+            assert!(is_handoff(handoff), "{handoff:?} is the handoff folder");
+        }
+        for other in [
+            "",
+            ".hivra",
+            ".hivra/config.json",
+            ".hivra/handoffs/task-1.md",
+            ".hivra/handoff-old/task-1.md",
+            "src/.hivra/handoff/task-1.md",
+            "handoff/task-1.md",
+            "src/a.ts",
+        ] {
+            assert!(!is_handoff(other), "{other:?} is the project's own file");
+        }
+        // A `..` is never trusted to lead into the folder: a path that has one is the project's own file, so it is
+        // integrated or refused like any other rather than silently left out.
+        assert!(!is_handoff("src/../.hivra/handoff/task-1.md"));
+        assert!(!is_handoff(".hivra/handoff/../config.json"));
     }
 
     #[test]

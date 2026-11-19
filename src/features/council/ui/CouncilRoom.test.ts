@@ -43,7 +43,8 @@ it("reads the stored revision, so another window's save does not block this one"
     container.querySelector<HTMLButtonElement>("[data-council-confirm]")!.click();
   });
   const saved = chats.getChat(room.id)!.council!;
-  expect(saved.phase).toBe("restate");
+  // Dropwave: in a team's chat the council is a mode, so a sent question is asked at once (no "confirm the question").
+  expect(saved.phase).toBe("running");
   expect(saved.revision).toBe(3);
   expect(saved.question).toBe("from the other window");
   host.setCouncilEnginesForTests(undefined);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  devinRowForSetting,
   DEVIN_ASK_EDITS_RULE,
   DEVIN_AUTH_HELP,
   devinApiKeyFromCredentials,
@@ -579,5 +580,27 @@ describe("devin updates", () => {
       }),
     ).toBe("ls");
     expect(devinPermissionCommand({ toolCall: { toolCallId: "t" } })).toBeUndefined();
+  });
+});
+
+describe("devinRowForSetting: the row Devin reports it is on (WP-175 LOW 8)", () => {
+  it("keeps the current row when that row has the reported setting", () => {
+    expect(devinRowForSetting("accept-edits", "auto-accept-edits")).toBe("auto-accept-edits");
+    expect(devinRowForSetting("accept-edits", "supervised")).toBe("supervised");
+  });
+
+  it("names the one row that has a setting nobody else shares", () => {
+    expect(devinRowForSetting("smart", null)).toBe("auto");
+    expect(devinRowForSetting("bypass", "supervised")).toBe("full-access");
+    expect(devinRowForSetting("plan", "auto")).toBe("plan");
+  });
+
+  it("is unknown when two rows share the setting and the current row is not one of them", () => {
+    expect(devinRowForSetting("accept-edits", null)).toBeNull();
+    expect(devinRowForSetting("accept-edits", undefined)).toBeNull();
+  });
+
+  it("is unknown for a setting no row has", () => {
+    expect(devinRowForSetting("something-else", "auto")).toBeNull();
   });
 });

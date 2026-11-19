@@ -96,6 +96,12 @@ it("recognises a private chat by its id or its provider id, and not a public one
   expect(chatIsPrivate(new Set(), ["hub-1"])).toBe(false);
   expect(chatIsPrivate(keys, ["hub-1"])).toBe(true);
   expect(chatIsPrivate(keys, ["other"])).toBe(false);
+  const thread = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+  const codex = new Set([thread]);
+  expect(chatIsPrivate(codex, [`rollout-2026-10-04T12-00-00-${thread}`])).toBe(true);
+  expect(chatIsPrivate(codex, [`sessions/2026/10/04/rollout-2026-10-04T12-00-00-${thread}.jsonl`])).toBe(true);
+  expect(chatIsPrivate(codex, [`rollout-2026-10-04T12-00-00-${thread}x`])).toBe(false);
+  expect(chatIsPrivate(new Set(["abcdef"]), ["rollout-1-abcdef"])).toBe(false);
 });
 
 it("does not offer a private chat to history import or learn-from-chats", () => {

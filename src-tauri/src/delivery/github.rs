@@ -56,6 +56,10 @@ impl Github for CliGithub {
             command.current_dir(dir);
         }
         crate::harness::apply_gui_env(&mut command);
+        let command = match delivery_gh_prefix() {
+            Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+            Err(_) => std::process::Command::new("/nonexistent/monocode-sandbox-refused"),
+        };
         let ran = bounded::run(command, GH_TIMEOUT).map_err(|failed| match failed {
             bounded::Failed::NotFound => {
                 "GitHub CLI (`gh`) is not installed, so Hivra can't open or merge pull requests."
@@ -75,6 +79,20 @@ impl Github for CliGithub {
             ran.stderr
         };
         Err(detail.trim().chars().take(600).collect())
+    }
+}
+
+/// Prefix for delivery's `gh`, or nothing when the sandbox is off.
+/// Unit tests stay plain. A profile that cannot be built refuses the start.
+fn delivery_gh_prefix() -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    #[cfg(test)]
+    {
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        crate::agent_sandbox::action_wrap(data.as_deref(), &[])
     }
 }
 
@@ -108,10 +126,20 @@ pub(crate) mod fake {
         pub signed_in: bool,
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
+        /// `gh api <path>` answers (WP-202): the first key the path contains answers, every time.
+        /// A `--jq` call is not one of these. That call is the changed-file list, and a compare body is JSON.
+        pub apis: Vec<(String, String)>,
+        /// `gh api --jq` answer for the changed-file list. None falls through to an empty success.
+        pub files: Mutex<Option<Result<String, String>>>,
     }
 
     impl FakeGithub {
-        pub fn new(reads: Vec<PrRead>) -> Self {
+        pub fn new(mut reads: Vec<PrRead>) -> Self {
+            // A pull request with one harmless changed file, unless a test sets its own list: the security gate and
+            // the floor refuse to merge a list they cannot read.
+            for read in &mut reads {
+                read.changed_files.get_or_insert(1);
+            }
             Self {
                 reads: Mutex::new(reads),
                 runs: Mutex::new(Vec::new()),
@@ -120,7 +148,26 @@ pub(crate) mod fake {
                 signed_in: true,
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
+                apis: Vec::new(),
+                files: Mutex::new(Some(Ok("README.md\n".into()))),
             }
+        }
+
+        pub fn with_api(mut self, key: &str, json: &str) -> Self {
+            self.apis.push((key.to_string(), json.to_string()));
+            self
+        }
+
+        /// A merge-base answer for tests that never set one. Appended last, so a key registered
+        /// earlier still wins. `run` does not invent this.
+        pub fn steady(self) -> Self {
+            self.with_api(
+                "per_page=1",
+                &format!(
+                    r#"{{"status":"identical","ahead_by":0,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
+                    "ba5e".repeat(10)
+                ),
+            )
         }
 
         pub fn ran(&self, first: &str, second: &str) -> Vec<Vec<String>> {
@@ -157,6 +204,26 @@ pub(crate) mod fake {
                 .any(|f| args.first() == Some(f) || args.get(1) == Some(f))
             {
                 return Err(format!("gh {} failed", args.join(" ")));
+            }
+            if args.first().map(String::as_str) == Some("api") {
+                let path = args.get(1).map(String::as_str).unwrap_or("");
+                // The security gate lists files with `--jq`, which prints paths. A compare stub is JSON for the
+                // base hold (its path is the same compare with a query string). The first matching key must not
+                // answer the file list: the gate rejects a JSON body, and a harmless pull request would be held.
+                let file_list = args.iter().any(|arg| arg == "--jq");
+                let stub = if file_list {
+                    None
+                } else {
+                    self.apis
+                        .iter()
+                        .find(|(key, _)| path.contains(key.as_str()))
+                };
+                if let Some((_, json)) = stub {
+                    return Ok(json.clone());
+                }
+                if let Some(result) = self.files.lock().unwrap().clone() {
+                    return result;
+                }
             }
             match (
                 args.first().map(String::as_str),

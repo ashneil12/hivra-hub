@@ -1,0 +1,6 @@
+# Quint runs after the A1/A2 fixes (default knobs HAND_ASK_REPLACED=false, MAYBE_CAP=9), 13 Nov 2026
+default inv_known: No violation found (seed=0xe85741595d88f83a)
+default inv_touchedNeverGone: No violation found (seed=0x9bb25e78779ac5da)
+default inv_dropIsPersons: No violation found (seed=0xffd0e2d9fa7ecaeb)
+default inv_neverGone: No violation found (seed=0x5f981f64e005b283)
+default inv_noStarvation: Found an issue (seed=0xe38e5532d6d024a)

@@ -74,6 +74,8 @@ test("the wrapper with no key exits before any Claude starts, and never prints a
   assert.equal(out.status, 2);
   assert.match(out.stderr, /need ANTHROPIC_TEST_API_KEY/);
   assert.equal(fs.existsSync(marker), false);
+  // Starting for real needs the macOS sandbox the wrapper puts the agent under; elsewhere it refuses to start bare.
+  if (process.platform !== "darwin") return fs.rmSync(state, { recursive: true, force: true });
   // With a (fake) key it starts, and neither the log nor the output holds the key.
   fs.writeFileSync(fakeClaude, `#!/bin/sh\ntouch '${marker}'\n[ -n "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo '{"type":"result","subtype":"success","ok":true}'\n`, { mode: 0o755 });
   const settings = path.join(state, "bench-settings.json");

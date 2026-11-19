@@ -1,0 +1,13 @@
+id: ts-test-fixed-sleep
+valid:
+  - |
+    await expect.poll(() => ready()).toBe(true);
+  - |
+    await new Promise((resolve) => setTimeout(resolve, delayFromTest));
+invalid:
+  - |
+    await page.waitForTimeout(250);
+  - |
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  - |
+    await new Promise(r => setTimeout(r, 100));

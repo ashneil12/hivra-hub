@@ -1,0 +1,23 @@
+id: rust-test-fixed-sleep
+language: rust
+severity: warning
+message: >-
+  A fixed sleep in a Rust test. It passes on a fast machine and fails under load (PR #301, #308).
+note: >-
+  Poll for the condition with a deadline (loop, check, short sleep, give up after a limit) instead of sleeping once
+  for a guessed time.
+rule:
+  any:
+    - pattern: std::thread::sleep(Duration::from_millis($N))
+    - pattern: std::thread::sleep(Duration::from_secs($N))
+    - pattern: std::thread::sleep(std::time::Duration::from_millis($N))
+    - pattern: std::thread::sleep(std::time::Duration::from_secs($N))
+    - pattern: thread::sleep(Duration::from_millis($N))
+    - pattern: thread::sleep(Duration::from_secs($N))
+  inside:
+    kind: mod_item
+    regex: '^mod tests\b'
+    stopBy: end
+constraints:
+  N:
+    kind: integer_literal

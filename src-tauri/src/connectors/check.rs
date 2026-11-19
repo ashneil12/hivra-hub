@@ -390,6 +390,7 @@ mod tests {
                 "mcp_url".into(),
                 "http://127.0.0.1:9/SECRET_PATH_SENTINEL/mcp".into(),
             )]),
+            refs: BTreeMap::new(),
             oauth: None,
         };
         let outcome = run(entry, &mut login, &Memory::default(), &std::env::temp_dir());

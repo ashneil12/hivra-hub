@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { stripHiddenCharacters } from "../model/hiddenText";
 import { appNoteText } from "../model/appNote";
 import {
   Check,
@@ -20,9 +21,11 @@ export function MessageQueue({
   onEdit,
   onEditingChange,
   onSteer,
+  steerNote,
   onResume,
   variant = "queue",
   sendingId,
+  waitReasons,
 }: {
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
@@ -30,9 +33,13 @@ export function MessageQueue({
   onEdit?: (messageId: string, text: string) => void;
   onEditingChange?: (messageId?: string) => void;
   onSteer?: (messageId: string) => void;
+  /** Replaces Steer when this agent cannot redirect a running turn. Shown once. */
+  steerNote?: string;
   onResume?: () => void;
   variant?: "queue" | "messages";
   sendingId?: string;
+  /** WP-245: why each message waits, by its id (queueWaitReason.ts). */
+  waitReasons?: ReadonlyMap<string, string>;
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editDraft, setEditDraft] = useState("");
@@ -64,8 +71,9 @@ export function MessageQueue({
     onEditingChange?.();
   };
   const saveEdit = (message: QueuedMessage) => {
-    if (!editDraft.trim() && message.attachments.length === 0) return;
-    onEdit?.(message.id, editDraft);
+    const visible = stripHiddenCharacters(editDraft).text;
+    if (!visible.trim() && message.attachments.length === 0) return;
+    onEdit?.(message.id, visible);
     setEditingId(undefined);
     setEditDraft("");
   };
@@ -100,6 +108,11 @@ export function MessageQueue({
           <div role="status" className="py-1 text-[11px] text-content/50">
             {sendingId ? "Sending…" : "Waiting to send"}
           </div>
+        ) : null}
+        {steerNote?.trim() ? (
+          <p role="note" className="py-1 text-[12px] text-content/70">
+            {steerNote}
+          </p>
         ) : null}
         {messages.map((message, index) => {
           const sending = sendingId === message.id;
@@ -175,9 +188,13 @@ export function MessageQueue({
                       <p role="alert" className="text-red-400">
                         {message.error}
                       </p>
+                    ) : !sending && waitReasons?.get(message.id) ? (
+                      <p className="truncate text-[11px] text-content/60" data-queue-wait>
+                        {waitReasons.get(message.id)}
+                      </p>
                     ) : null}
                   </div>
-                  {onSteer && !message.monoSessionCompletion ? (
+                  {onSteer && !steerNote?.trim() && !message.monoSessionCompletion ? (
                     <button
                       type="button"
                       disabled={sending}

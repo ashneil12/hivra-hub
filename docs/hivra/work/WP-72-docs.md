@@ -52,3 +52,11 @@ version and mention rules to rusqlite.
 - [ ] Browser spec: create a nested page, type with the slash menu, mention a task, restore an older version.
       Screenshots in the PR.
 - [ ] `npm run check` passes.
+
+## Addendum (10 Nov 2026): an agent's edit to a page can wait for the person
+
+Source: Nimbalyst (MIT, Copyright (c) 2024-2026 Nimbalyst Inc.). Ideas only, no code copied. Option, off by default.
+
+`docs.update` can land as a proposal: changed blocks show in red (removed) and green (added) in the editor, and the person accepts or rejects each block. Until a block is accepted, readers and search see the page as it was. Accepting writes a version marked as the person's; rejecting writes nothing. `docs.get` tells the agent that a proposal is pending, so it does not write over it.
+
+Tests: a rejected block leaves the page unchanged, an accepted block makes a version, and a second proposal on the same block replaces the first. Done when the setting is off by default and the Docs browser spec covers accept, reject and the default direct write.

@@ -1,5 +1,8 @@
+import { isTauri } from "@tauri-apps/api/core";
+import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
+import { codexModelRoutes, splitRoutedModel } from "./codexRoutes";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import {
   exhaustedWindowResetAt,
@@ -23,6 +26,10 @@ import {
   asRecord,
   buildThreadStartParams,
   buildTurnStartParams,
+  codexAutoFileChange,
+  codexGrantsPermissionsAutomatically,
+  codexSkipsOuterSandbox,
+  hivraSandboxEnabled,
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
@@ -36,6 +43,12 @@ import {
   type CodexTurnUsage,
 } from "./codexProtocol";
 import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
+import { codexLeadConfig, mergeCodexLead } from "./codexLeadConfig";
+import {
+  forwardChildAnswer,
+  type ChildAnswer,
+  type SessionPort,
+} from "../../../../features/sessions/model/childApproval";
 import {
   deleteGeneratedImages,
   saveGeneratedImage,
@@ -97,7 +110,11 @@ type Live = {
   codexStore?: "mono";
   /** WP-41: the developer instructions this process started or resumed with. */
   instructionKey: string;
+  /** The app's router provider a saved model runs on, fixed when the thread opens; unset on Codex's own models. */
+  modelProvider?: string;
   runtimeMode: RuntimeMode;
+  /** Snapshot of Hivra's agent sandbox when this thread started. Off outside the app. */
+  hivraSandbox: boolean;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
@@ -122,6 +139,9 @@ type Live = {
   notificationQueue: Promise<void> | null;
   /** Child thread id -> the agent tool row that spawned it. */
   subagentThreads: Map<string, string>;
+  /** WP-122: child thread id -> the port an approval answer is written to. */
+  childPorts: Map<string, SessionPort>;
+  childSenders: Map<string, (answer: ChildAnswer) => Promise<void>>;
   /** Child notifications that arrived before their row was known. */
   pendingSubagent: Map<string, Array<{ method: string; params: unknown }>>;
   /** Agent rows still running, by call id, with the name to settle them under. */
@@ -445,6 +465,9 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
   liveByThread.delete(sessionId);
   if (live) {
     live.muteUpdates = true;
+    // WP-122: the process is going away, so a late click cannot be delivered as a parent answer.
+    live.childPorts.clear();
+    live.childSenders.clear();
     live.turnGeneration += 1;
     clearServerRequests(live);
     live.turnDone?.();
@@ -454,6 +477,17 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
   }
   unwatchChild(sessionId);
   await killChild(sessionId).catch(() => undefined);
+}
+
+/**
+ * Codex force-closes leftover agent rows at turn end, because a closing
+ * agentsStates update is often missing. Command executions are not background
+ * work. While a turn is open, an agent row still in progress counts.
+ */
+export function codexHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.openAgentRows.size > 0;
 }
 
 export async function forgetCodexSession(sessionId: string): Promise<void> {
@@ -512,8 +546,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
   // WP-41: a running thread is resumed when the pstack index or the plain-English ending changed.
-  const developerInstructions = await codexDeveloperInstructions(input.cwd);
+  // WP-182: pass the session so a Mono's own skill list can be applied.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd, input.sessionId);
   const instructionKey = developerInstructions?.trim() ?? "";
+  // The provider is fixed per thread, so a switch between Codex's own models and a saved one opens it again.
+  const modelProvider = splitRoutedModel(nativeModelId(input.model)).provider;
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -524,7 +561,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
-    existing.instructionKey === instructionKey
+    existing.instructionKey === instructionKey &&
+    existing.modelProvider === modelProvider
   ) {
     existing.onEvent = input.onEvent;
     return existing;
@@ -572,7 +610,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       : undefined;
   const storeConfig = store?.config;
   // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
-  const extraConfig = await codexExtraConfig(input.cwd, input.sessionId);
+  // WP-120: the lead's monocode server sits beside those, and wins a name clash.
+  const extraConfig = mergeCodexLead(
+    await codexExtraConfig(input.cwd, input.sessionId),
+    await codexLeadConfig(input.sessionId),
+  );
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(
@@ -656,18 +698,49 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
-  await spawnChild(
-    input.sessionId,
-    path,
-    ["app-server"],
-    input.cwd,
-    {
-      provider: "codex",
-      id: input.providerAccountId ?? "default",
-    },
-    "codex",
-    codexStore,
-  );
+  const hivraSandbox = await readHivraSandbox();
+  const skipOuter = codexSkipsOuterSandbox({
+    runtimeMode: input.runtimeMode,
+    firstMate: input.firstMate,
+    hivraSandbox,
+  });
+  const account = {
+    provider: "codex" as const,
+    id: input.providerAccountId ?? "default",
+  };
+  // The saved models go only when there are some, so a start without them is exactly what it was.
+  const routes = codexModelRoutes();
+  if (routes.length > 0) {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+      undefined,
+      routes,
+    );
+  } else {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+    );
+  }
 
   try {
     await rpc.request("initialize", {
@@ -690,7 +763,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       );
     }
 
-    const model = nativeModelId(input.model);
+    // A saved model runs on its own Codex provider (codexRoutes.ts); Codex's own models pass as they are.
+    const routed = splitRoutedModel(nativeModelId(input.model));
+    const model = routed.model;
+    const routedConfig = routed.provider ? { model_provider: routed.provider } : undefined;
     const serviceTier = input.modelSettings?.serviceTier;
     const effort = input.modelSettings?.reasoningEffort;
 
@@ -707,13 +783,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           model,
           serviceTier,
           developerInstructions,
+          hivraSandbox,
         });
         const opened = await rpc.request<{ thread?: { id?: string } }>(
           "thread/resume",
           {
             threadId: resume.threadId,
             ...params,
-            ...withConfig(storeConfig, extraConfig, params.config),
+            ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           },
         );
         threadId = opened.thread?.id ?? resume.threadId;
@@ -737,12 +814,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         model,
         serviceTier,
         developerInstructions,
+        hivraSandbox,
       });
       const opened = await rpc.request<{ thread?: { id?: string } }>(
         "thread/start",
         {
           ...params,
-          ...withConfig(storeConfig, extraConfig, params.config),
+          ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       );
@@ -763,7 +841,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ephemeral,
       codexStore,
       instructionKey,
+      modelProvider,
       runtimeMode: input.runtimeMode,
+      hivraSandbox,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
       approvals: new Map(),
@@ -784,6 +864,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       turnGeneration: 0,
       notificationQueue: null,
       subagentThreads: new Map(),
+      childPorts: new Map(),
+      childSenders: new Map(),
       pendingSubagent: new Map(),
       openAgentRows: new Map(),
       rateLimits: new Map(),
@@ -813,7 +895,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 }
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
-  const model = nativeModelId(input.model);
+  const model = splitRoutedModel(nativeModelId(input.model)).model;
   const effort = input.modelSettings?.reasoningEffort;
   const serviceTier = input.modelSettings?.serviceTier;
 
@@ -828,6 +910,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     effort,
     serviceTier,
     intent: input.intent,
+    hivraSandbox: live.hivraSandbox,
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1203,9 +1286,11 @@ function bindSubagentThreads(
           agentModel: model,
         });
       if (owner !== callId) claimed += 1;
+      ensureChildPort(live, childId);
       continue;
     }
     live.subagentThreads.set(childId, callId);
+    ensureChildPort(live, childId);
   }
   return children.length > 0 && claimed === children.length;
 }
@@ -1471,6 +1556,31 @@ async function handleServerRequest(
       return;
     }
     const uiId = live.nextApprovalUiId++;
+    // WP-122: a child thread's ask is answered here, and the answer goes to that thread only.
+    const child = childThread(live, threadId);
+    if (child) {
+      await answerChildApproval(
+        live,
+        uiId,
+        id,
+        "permissions",
+        threadId,
+        child,
+        {
+          type: "approval.requested",
+          requestId: uiId,
+          kind: "other",
+          title: confirmation.title,
+        },
+        (decision) =>
+          live.rpc.respond(id, {
+            action: decision === "allow" ? "accept" : "decline",
+            content: decision === "allow" ? confirmation.content : null,
+            _meta: null,
+          }),
+      );
+      return;
+    }
     const pending = waitApproval(live, uiId, id, "permissions", threadId);
     // MCP consent requires an explicit decision outside non-plan Full Access turns.
     live.onEvent({
@@ -1533,6 +1643,15 @@ async function handleServerRequest(
       return;
     }
     if (live.runtimeMode === "supervised") {
+      const child = childThread(live, threadId);
+      if (child) {
+        await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) =>
+          decision === "allow"
+            ? live.rpc.respond(id, { scope: "turn", permissions: asRecord(params)?.permissions ?? {} })
+            : live.rpc.respond(id, { permissions: {} }),
+        );
+        return;
+      }
       const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
       live.onEvent(mapped.event);
       const decision = await pending;
@@ -1553,16 +1672,27 @@ async function handleServerRequest(
       }
       return;
     }
-    // auto / auto-accept: grant requested permissions for the turn.
-    const rec = asRecord(params);
-    await live.rpc.respond(id, {
-      scope: "turn",
-      permissions: rec?.permissions ?? {},
-    });
-    return;
+    // auto / auto-accept grant requested permissions, unless Hivra's sandbox is on. Then this falls through and asks.
+    if (codexGrantsPermissionsAutomatically(live.runtimeMode, live.hivraSandbox)) {
+      const rec = asRecord(params);
+      await live.rpc.respond(id, {
+        scope: "turn",
+        permissions: rec?.permissions ?? {},
+      });
+      return;
+    }
   }
 
-  const auto = autoApproval(live.runtimeMode, mapped.kind);
+  const auto =
+    mapped.kind === "file-change"
+      ? await codexAutoFileChange(
+          live.runtimeMode,
+          live.hivraSandbox,
+          fileChangePaths(params),
+          live.cwd,
+          fileChangeGrantRoot(params),
+        )
+      : autoApproval(live.runtimeMode, mapped.kind);
   if (auto) {
     await live.rpc.respond(id, {
       decision: toCodexApprovalDecision(auto, mapped.kind),
@@ -1570,6 +1700,13 @@ async function handleServerRequest(
     return;
   }
 
+  const child = childThread(live, threadId);
+  if (child) {
+    await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) =>
+      live.rpc.respond(id, { decision: toCodexApprovalDecision(decision, mapped.kind) }),
+    );
+    return;
+  }
   const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
   live.onEvent(mapped.event);
   const decision = await pending;
@@ -1584,6 +1721,103 @@ async function handleServerRequest(
   });
 }
 
+function childPortId(threadId: string): string {
+  const id = threadId.replace(/\r/g, "").trim();
+  if (!id || /[\u0000-\u001f]/.test(id)) return "";
+  return id;
+}
+
+function childThread(
+  live: Live,
+  threadId: string,
+): { name: string; sessionPort: string } | null {
+  if (!threadId || threadId === live.threadId || !live.subagentThreads.has(threadId)) return null;
+  const sessionPort = childPortId(threadId);
+  if (!sessionPort || sessionPort === live.threadId) return null;
+  const callId = live.subagentThreads.get(threadId);
+  if (!callId) return null;
+  return { name: live.openAgentRows.get(callId)?.trim() || "Subagent", sessionPort };
+}
+
+function ensureChildPort(live: Live, threadId: string): void {
+  const id = childPortId(threadId);
+  if (!id || id === live.threadId || live.childPorts.has(id)) return;
+  live.childPorts.set(id, {
+    id,
+    write: (answer) => {
+      const send = live.childSenders.get(answer.requestId);
+      if (!send) throw new Error("missing child sender");
+      live.childSenders.delete(answer.requestId);
+      // A failed write rejects, as it does for the parent's own answer, so the turn fails instead of
+      // showing an answer Codex never got.
+      return send(answer);
+    },
+  });
+}
+
+async function deliverChildDecision(
+  live: Live,
+  threadId: string,
+  requestId: string,
+  decision: "allow" | "deny",
+  send: (decision: "allow" | "deny") => Promise<void>,
+): Promise<"sent" | "unreachable" | "parent"> {
+  if (!threadId || threadId === live.threadId || !live.subagentThreads.has(threadId)) return "parent";
+  const sessionPort = childPortId(threadId);
+  const port = sessionPort ? live.childPorts.get(sessionPort) : undefined;
+  if (!sessionPort || !port || port.id !== sessionPort) return "unreachable";
+  live.childSenders.set(requestId, (answer) => send(answer.decision));
+  try {
+    return await forwardChildAnswer({ requestId, sessionPort }, decision, live.childPorts);
+  } finally {
+    live.childSenders.delete(requestId);
+  }
+}
+
+async function answerChildApproval(
+  live: Live,
+  uiId: number,
+  rpcId: JsonRpcId,
+  kind: CodexApprovalKind,
+  threadId: string,
+  child: { name: string; sessionPort: string },
+  event: Extract<HarnessEvent, { type: "approval.requested" }>,
+  send: (decision: "allow" | "deny") => Promise<void>,
+): Promise<void> {
+  const detail = event.title.trim();
+  let pending = waitApproval(live, uiId, rpcId, kind, threadId);
+  live.onEvent({
+    ...event,
+    child: { name: child.name, sessionPort: child.sessionPort, ...(detail ? { detail } : {}) },
+  });
+  for (;;) {
+    const decision = await pending;
+    if (decision === "cancelled") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    const sent = await deliverChildDecision(live, threadId, String(rpcId), decision, send);
+    if (sent === "sent") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    if (sent === "parent") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      await send(decision);
+      return;
+    }
+    if (live.muteUpdates || live.cancelled) {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    live.onEvent({
+      type: "status",
+      text: "The subagent is not reachable, so the answer was not sent.",
+    });
+    pending = waitApproval(live, uiId, rpcId, kind, threadId);
+  }
+}
+
 function waitApproval(
   live: Live,
   uiId: number,
@@ -1596,6 +1830,50 @@ function waitApproval(
   }).finally(() => {
     live.approvals.delete(uiId);
   });
+}
+
+/**
+ * `grantRoot` on a file-change approval widens the write to that folder. Missing is no extra grant. A value that is
+ * not a string cannot be checked, so it comes back empty and the caller asks.
+ */
+function fileChangeGrantRoot(params: unknown): string | null | undefined {
+  const value = asRecord(params)?.grantRoot;
+  if (value == null) return undefined;
+  if (typeof value !== "string") return "";
+  return value;
+}
+
+/** Paths on a file-change approval. Missing, empty, or a change with no path fails closed (ask) while the sandbox is on. */
+function fileChangePaths(params: unknown): string[] | undefined {
+  const changes = asRecord(params)?.changes;
+  if (!Array.isArray(changes)) return undefined;
+  const paths: string[] = [];
+  for (const change of changes) {
+    const path = stringField(asRecord(change), "path");
+    if (!path) return undefined;
+    paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * Hivra's sandbox, read once when a Codex thread starts. Outside the app this stays off, so tests do not ask.
+ * Inside the app, a failed read fails closed (on): a chat must not grant itself a permission we could not check.
+ */
+async function readHivraSandbox(): Promise<boolean> {
+  let inApp = false;
+  try {
+    inApp = isTauri();
+  } catch {
+    return hivraSandboxEnabled(false, null);
+  }
+  if (!inApp) return hivraSandboxEnabled(false, null);
+  try {
+    const status = await loadAgentSandbox();
+    return hivraSandboxEnabled(true, status);
+  } catch {
+    return hivraSandboxEnabled(true, null);
+  }
 }
 
 function autoApproval(

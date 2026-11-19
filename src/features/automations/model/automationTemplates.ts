@@ -307,6 +307,30 @@ Do not add new test infrastructure. Do not "fix" flakes by weakening assertions.
 Group by user-facing changes, fixes, and internal work. Skip noise (formatting, lockfile-only, merge commits). Use the project's existing changelog or docs style if one exists; otherwise write a short markdown summary. Do not invent features that are not in the commits.`,
   },
   {
+    // WP-250: recurring work lands on the board, and a first mate with a matching pickup rule takes it.
+    id: "recurring-task",
+    category: "environment",
+    icon: "check",
+    name: "Put a task on the board",
+    description:
+      "Add the same task every week, so a first mate with a matching pickup rule takes it",
+    trigger: {
+      kind: "time",
+      event: "weekly",
+      scheduleKind: "weekly",
+      time: "09:00",
+      dayOfWeek: 1,
+    },
+    triggerLabel: "Monday at 09:00",
+    prompt: `Create one task in this project with the app tool tasks.create, and do nothing else.
+
+Title: Weekly dependency check
+Labels: chore
+Description: Check this project's dependencies for updates and known problems, and propose the safe upgrades.
+
+Edit the title, labels and description above to the task you want each time. Do not start the work yourself: a first mate whose pickup rule matches its labels takes it.`,
+  },
+  {
     id: "repo-health",
     category: "environment",
     icon: "gauge",

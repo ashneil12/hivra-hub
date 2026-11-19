@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ALT,
   IS_MAC,
@@ -38,6 +39,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "work-log"
   | "usage"
   | "connected"
   | "dashboards"
@@ -45,15 +47,28 @@ export type SettingsSectionId =
   | "backups"
   | "history"
   | "memory"
-  | "connectors";
+  | "connectors"
+  | "secrets";
 
-/** Rail buckets. Sections list in order under their group label. */
-export type SettingsGroupId = "app" | "agents" | "workspace";
+/** Rail buckets. Sections list under their group label, in the order SETTINGS_GROUPS gives. */
+export type SettingsGroupId = "app" | "agents" | "tools" | "record" | "data" | "workspace";
 
-export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
-  { id: "app", label: "App" },
-  { id: "agents", label: "Agents" },
-  { id: "workspace", label: "Workspace" },
+// Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists instead of one long one. The
+// everyday ones are on top; what a non-technical owner rarely needs (machines, MCP, plugins, worktrees, archive, trash)
+// is under Advanced, folded until asked for.
+export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string; folded?: boolean; sections: SettingsSectionId[] }[] = [
+  { id: "app", label: "App", sections: ["general", "appearance", "keybindings", "usage"] },
+  // Who works for you, then what they can use (Ash, 11 Nov round 5: first mates by that name, and only useful things).
+  { id: "agents", label: "Your team", sections: ["monos", "teams", "chat"] },
+  { id: "tools", label: "What they can use", sections: ["providers", "skills", "connectors", "connected", "memory"] },
+  { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "changes", "history"] },
+  { id: "data", label: "Your data", sections: ["portable", "backups", "secrets"] },
+  {
+    id: "workspace",
+    label: "Advanced",
+    folded: true,
+    sections: ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],
+  },
 ];
 
 export type SettingsSection = {
@@ -76,7 +91,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connections",
-    group: "app",
+    group: "workspace",
     label: "Remote machines",
     description:
       "Run agents on your other machines, and pair your phone with this desktop. For app logins, see Connectors.",
@@ -94,14 +109,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "changes",
-    group: "app",
+    group: "record",
     label: "Changes",
     description: "Changes the app and your Monos made to their own screens, with Undo, and any it turned down for breaking a design rule.",
     keywords: "undo proposal self change dashboard history design rules",
   },
   {
     id: "decisions",
-    group: "app",
+    group: "record",
     label: "Decisions",
     description:
       "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
@@ -109,11 +124,18 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "activity",
-    group: "app",
+    group: "record",
     label: "Activity",
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "work-log",
+    group: "record",
+    label: "Work log",
+    description: "What got done, grouped by day. One project, or every project.",
+    keywords: "work log today outcomes decisions",
   },
   {
     id: "usage",
@@ -125,7 +147,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connected",
-    group: "app",
+    group: "tools",
     label: "Connected apps",
     description:
       "AI tools on this computer that can read Hivra, and what each one may see.",
@@ -133,21 +155,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "dashboards",
-    group: "app",
+    group: "workspace",
     label: "Dashboards",
     description: "Each project's dashboard template, and reset to default.",
     keywords: "template dashboard today cards sidebar reset",
   },
   {
     id: "portable",
-    group: "app",
+    group: "data",
     label: "Export and import",
     description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
     keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
   },
   {
     id: "backups",
-    group: "app",
+    group: "data",
     label: "Backups",
     description:
       "A checked copy on a schedule. Bring back one chat, Mono, doc or task, or put everything back.",
@@ -155,7 +177,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "history",
-    group: "app",
+    group: "record",
     label: "Chat history",
     description:
       "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
@@ -163,17 +185,24 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "memory",
-    group: "app",
+    group: "tools",
     label: "Memory",
     description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
     keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",
-    group: "app",
+    group: "tools",
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
+  },
+  {
+    id: "secrets",
+    group: "data",
+    label: "Secrets",
+    description: "The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.",
+    keywords: "secret key token password keychain agent approval env utility",
   },
   {
     id: "keybindings",
@@ -190,11 +219,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor settle snooze inbox",
   },
   {
     id: "providers",
-    group: "agents",
+    group: "tools",
     label: "Providers",
     description:
       "Provider accounts, agent CLIs MonoCode can drive, and the model new sessions start with.",
@@ -203,7 +232,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "mcp",
-    group: "agents",
+    group: "workspace",
     label: "MCP",
     description:
       "Find MCP servers across providers and manage their connections.",
@@ -212,7 +241,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "skills",
-    group: "agents",
+    group: "tools",
     label: "Skills",
     description:
       "Discover and manage file skills from project, personal, and harness folders.",
@@ -220,7 +249,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "plugins",
-    group: "agents",
+    group: "workspace",
     label: "Plugins",
     description:
       "Plugins you can add, what each one does and its licence, and the indexes they come from.",
@@ -228,7 +257,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "crew",
-    group: "agents",
+    group: "workspace",
     label: "Crew",
     description: "Which CLI, model and effort a task uses, in the order you set.",
     keywords: "crew rules routing cli model effort reroute labels paths",
@@ -236,17 +265,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "monos",
     group: "agents",
-    label: "Monos",
+    label: "First mates",
     description:
-      "The resident agent beside your tabs, and which projects have one.",
-    keywords: "mono resident agent mascot claim project title bar",
+      "Your Chief of Staff and first mates: what each is called and which projects it works on.",
+    keywords: "mono monos first mate chief of staff rename name resident agent mascot claim project title bar",
   },
   {
     id: "teams",
     group: "agents",
     label: "Teams",
-    description: "Teams of named Monos you work with (Marketing and more), each with its room, and new Monos agents propose for your okay.",
-    keywords: "team marketing named mono agent propose approve room soul engine",
+    description: "The team chats in each project, who is in them, and new teams a first mate proposes for your okay.",
+    keywords: "team marketing named mono first mate agent propose approve room soul engine leadership project",
   },
   {
     id: "inbox",
@@ -275,8 +304,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "worktrees",
     group: "workspace",
-    label: "Worktrees",
-    description: "Manage additional worktrees for each project.",
+    label: "Code and worktrees",
+    description: "Show Git, files and changes in projects, and manage each project's extra worktrees.",
     keywords: "git branch worktree working copy project create delete",
   },
 ];
@@ -284,11 +313,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 export function settingsSectionsByGroup(): {
   id: SettingsGroupId;
   label: string;
+  folded?: boolean;
   sections: SettingsSection[];
 }[] {
-  return SETTINGS_GROUPS.map((group) => ({
+  return SETTINGS_GROUPS.map(({ sections: order, ...group }) => ({
     ...group,
-    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id),
+    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id).sort(
+      (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
+    ),
   })).filter((group) => group.sections.length > 0);
 }
 
@@ -311,10 +343,22 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "mobile phone iphone qr pair code router device",
   },
   {
+    id: "hivra-cloud",
+    section: "connections",
+    label: "Hivra Cloud",
+    keywords: "cloud sign in pair machine address endpoint always on",
+  },
+  {
     id: "remote-machines",
     section: "connections",
     label: "Your machines",
     keywords: "ssh remote connect host server environment",
+  },
+  {
+    id: "team-workspace",
+    section: "connections",
+    label: "Share projects with my team",
+    keywords: "team workspace shared projects server invitation join address sync collaborate off",
   },
   {
     id: "mcp-servers",
@@ -325,21 +369,21 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "monos-enabled",
     section: "monos",
-    label: "Show monos",
-    keywords: "mono agent rail hide",
+    label: "Show first mates",
+    keywords: "mono monos agent rail hide",
   },
   {
     id: "rail-monos-pinned",
     section: "monos",
-    label: "Pin monos to the icon rail",
+    label: "Pin first mates to the icon rail",
     keywords: "mono rail compact collapsed icons top divider project picker",
   },
   {
     id: "mono-list",
     section: "monos",
-    label: "Your monos",
+    label: "Your first mates",
     keywords:
-      "mono reset soul name projects sessions sidebar visibility hidden show",
+      "mono monos reset soul name rename chief of staff projects sessions sidebar visibility hidden show",
   },
   {
     id: "project-worktrees",
@@ -362,11 +406,30 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
   },
   {
+    id: "show-code-tools",
+    section: "worktrees",
+    label: "Show code tools",
+    keywords: "advanced files changes git diff worktree picker sidebar developer technical simple",
+  },
+  {
+    id: "worktree-autoclear",
+    section: "worktrees",
+    label: "Clear build output of finished worktrees",
+    keywords:
+      "disk space automatic auto finished merged closed pull request accepted target node_modules test-results playwright-report build output delete free",
+  },
+  {
     id: "worktree-cleanup",
     section: "worktrees",
     label: "Clean up worktrees",
     keywords:
       "janitor disk space size merged stale idle build output target node_modules remove free report",
+  },
+  {
+    id: "chief-lists",
+    section: "general",
+    label: "Show the three lists",
+    keywords: "chief of staff needs you asked working lists chips buttons top beside panel main chat hand back",
   },
   {
     id: "update",
@@ -405,6 +468,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "notify alert toast permission reminder background",
   },
   {
+    id: "quiet-hours",
+    section: "general",
+    label: "Quiet hours",
+    keywords: "quiet hours overnight mute programme notices",
+  },
+  {
     id: "notes",
     section: "general",
     label: "Notes",
@@ -417,6 +486,22 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
           section: "general" as const,
           label: "Quick composer",
           keywords: "spotlight global shortcut hotkey floating prompt anywhere",
+        },
+      ]
+    : []),
+  ...(IS_MAC
+    ? [
+        {
+          id: "agent-sandbox",
+          section: "general" as const,
+          label: "Run agents in the macOS sandbox",
+          keywords: "sandbox security isolate protect ssh keys keychain git hooks agents confine",
+        },
+        {
+          id: "computer-use",
+          section: "general" as const,
+          label: "Computer use",
+          keywords: "desktop apps screen click type control accessibility screenshot open-computer-use",
         },
       ]
     : []),
@@ -578,6 +663,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "wallpaper image picture opacity backdrop",
   },
   {
+    id: "chat-list-inbox",
+    section: "chat",
+    label: "Settle and snooze",
+    keywords:
+      "finished chats hide until time needs you top list sort shelf wake",
+  },
+  {
     id: "transcript-layout",
     section: "chat",
     label: "Transcript layout",
@@ -645,11 +737,29 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "model-connections",
+    section: "providers",
+    label: "Connections",
+    keywords: "connect subscription login sign in grok claude chatgpt oh my pi extra connection router",
+  },
+  {
+    id: "text-generation",
+    section: "providers",
+    label: "Short text",
+    keywords: "title commit branch openrouter ollama deepseek",
+  },
+  {
     id: "agent-clis",
     section: "providers",
     label: "Agent CLIs",
     keywords:
       "codex opencode cursor grok pi omp fx hermes antigravity devin binary path",
+  },
+  {
+    id: "more-agents",
+    section: "providers",
+    label: "More agents",
+    keywords: "local command acp extra agent",
   },
   {
     id: "provider-accounts",
@@ -748,11 +858,55 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Plugin indexes",
     keywords: "index source bundled github marketplace url file",
   },
+  // WP-141: the crew defaults screen, above the advanced rules.
+  {
+    id: "crew-defaults",
+    section: "crew",
+    label: "Crew defaults",
+    keywords: "default lock never use fallback builder reviewer researcher",
+  },
   {
     id: "crew-rules",
     section: "crew",
     label: "Crew rules",
     keywords: "routing cli model effort reroute labels paths",
+  },
+  {
+    id: "spend-limit",
+    section: "crew",
+    label: "Spend limit",
+    keywords: "measured cost usd money budget pause builders ceiling month day",
+  },
+  // SC-3a: how much each task is tested before it counts as done.
+  {
+    id: "testing-mode",
+    section: "crew",
+    label: "How tasks are tested",
+    keywords:
+      "testing tests review checks quality each task ship at ship light full off no testing done gate bulk pass",
+  },
+  // PT-2: the open-source proof tools that fit a project, and a per-project switch for each one it has.
+  {
+    id: "proof-tools",
+    section: "crew",
+    label: "Proof tools",
+    keywords:
+      "proof tools testing tests property mutation end to end api scanner fast-check stryker playwright proptest hypothesis mutmut schemathesis semgrep ast-grep cargo-mutants e2e open source switch off on use project",
+  },
+  // SC-5: which model family checks a finished task.
+  {
+    id: "checker-family",
+    section: "crew",
+    label: "Who checks the work",
+    keywords: "checker second model family different claude codex grok review verify re-run read only copy",
+  },
+  // PT-4: when the running checker runs.
+  {
+    id: "checker-when",
+    section: "crew",
+    label: "When the checker runs",
+    keywords:
+      "checker running checker when every code change risky only off follow testing mode ship check review second model cost quality",
   },
 ];
 
@@ -1196,6 +1350,47 @@ export function subscribeMonoRailCollapsed(onStoreChange: () => void) {
     window.removeEventListener(MONO_RAIL_COLLAPSED_CHANGE_EVENT, onStoreChange);
 }
 
+/** G6: "Show code tools" (Git, files, changes and worktrees in a project's sidebar; Settings > Advanced > Worktrees). */
+export const SHOW_CODE_TOOLS_KEY = "monocode.showCodeTools";
+/** Where codeTools.ts kept it in one window's storage before it moved here: read once, then let go. */
+const SHOW_CODE_TOOLS_LEGACY_KEY = "monocode:show-code-tools";
+
+/** Fired on `window` when code tools are shown or hidden. */
+export const SHOW_CODE_TOOLS_CHANGE_EVENT = "monocode:show-code-tools-change";
+
+/**
+ * The saved choice, or `fallback` when there is none. The default (upstream keeps its tools, the hub hides them) comes
+ * from codeTools.ts: this file is also bundled into the host (host/build.mjs), where the hub flag can't be read.
+ */
+export function loadShowCodeTools(fallback: boolean): boolean {
+  const saved = readFlag(SHOW_CODE_TOOLS_KEY);
+  if (saved != null) return saved;
+  const legacy = readFlag(SHOW_CODE_TOOLS_LEGACY_KEY);
+  if (legacy == null) return fallback;
+  writeFlag(SHOW_CODE_TOOLS_KEY, legacy);
+  try {
+    if (readFlag(SHOW_CODE_TOOLS_KEY) === legacy) localStorage.removeItem(SHOW_CODE_TOOLS_LEGACY_KEY);
+  } catch {
+    // Read again next time; the setting already has it once written.
+  }
+  return legacy;
+}
+
+export function saveShowCodeTools(value: boolean) {
+  writeFlag(SHOW_CODE_TOOLS_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(SHOW_CODE_TOOLS_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeShowCodeTools(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(SHOW_CODE_TOOLS_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(SHOW_CODE_TOOLS_CHANGE_EVENT, onStoreChange);
+}
+
 const MONO_MENU_BAR_KEY = "monocode.monoMenuBarIcon";
 
 /** Fired on `window` when the menu bar icon is shown or hidden. */
@@ -1281,6 +1476,47 @@ export function subscribeLiveAgentsEnabled(onStoreChange: () => void) {
   window.addEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const MORE_AGENTS_ENABLED_KEY = "monocode.moreAgentsEnabled";
+
+export const MORE_AGENTS_ENABLED_DEFAULT = false;
+
+/** Fired on `window` when More agents is switched on or off. */
+export const MORE_AGENTS_ENABLED_CHANGE_EVENT =
+  "monocode:more-agents-enabled-change";
+
+export function loadMoreAgentsEnabled(): boolean {
+  return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
+}
+
+/** The app's own copy of the switch, which Rust checks before any More agents start. Failures are not shown here. */
+export function syncMoreAgentsSwitch(value: boolean): Promise<void> {
+  return invoke("more_agents_set_enabled", { on: value }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+export function saveMoreAgentsEnabled(value: boolean) {
+  writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  void syncMoreAgentsSwitch(value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+export function subscribeMoreAgentsEnabled(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MORE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(
+      MORE_AGENTS_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
 }
 
 const CLOSE_TO_TRAY_KEY = "monocode.closeToTray";

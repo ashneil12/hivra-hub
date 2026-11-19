@@ -57,7 +57,7 @@ it("every project has a tab; one with no pages says No pages yet; cross-project 
   expect(host.querySelector('[data-pages-group="today"] h2')!.textContent).toBe("Not tied to a project");
   const nibbii = [...host.querySelectorAll('[role=tab]')].find((t) => t.textContent === "Nibbii") as HTMLButtonElement;
   await act(async () => nibbii.click());
-  expect(host.querySelector("[data-pages-filter-empty]")!.textContent).toContain("No pages yet");
+  expect(host.querySelector("[data-pages-filter-empty]")!.textContent).toContain("No hubs yet");
 });
 
 it("unpinned pins show only on row hover; pinned stay solid", async () => {

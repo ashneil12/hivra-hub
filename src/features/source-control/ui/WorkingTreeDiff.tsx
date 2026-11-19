@@ -22,7 +22,8 @@ import {
 } from "../model/workingTreeDiff";
 import { stageChunkText } from "../../files/editor/editorGit";
 import { LINE_DIFF_CONFIG } from "../model/lineDiff";
-import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
+import { type UnifiedDiffFileModel } from "./UnifiedDiffView";
+import { ReviewDiff } from "./ReviewDiff";
 import { pruneMap } from "../model/stableDiff";
 
 type Props = {
@@ -226,6 +227,14 @@ export function WorkingTreeDiff({
         deletions:
           unified?.deletions ?? (canUseIndexCounts ? file.deletions : 0),
         blocks: unchanged ? [] : (unified?.blocks ?? []),
+        beforeText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error && !unchanged
+            ? loaded.original
+            : undefined,
+        afterText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error && !unchanged
+            ? loaded.current
+            : undefined,
         canStage: kind === "unstaged",
         canDiscard: kind === "unstaged",
         canStageHunk:
@@ -332,7 +341,7 @@ export function WorkingTreeDiff({
   }
 
   return (
-    <UnifiedDiffView
+    <ReviewDiff
       files={models}
       visible={visible}
       fileCount={focusKind ? entries.length : files.length}

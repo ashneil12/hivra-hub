@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Spend limit fixture</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: white; }
+      #shell { display: flex; height: 70vh; }
+      #root { display: flex; min-width: 0; flex: 1; }
+      #limit { padding: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="shell" data-wp176-shell></div>
+    <div id="limit"></div>
+    <div id="controls">
+      <button id="launch" type="button">Launch a builder</button>
+      <button id="pump" type="button">Let waiting builders try</button>
+    </div>
+    <script type="module" src="./wp176-spend-limit.tsx"></script>
+  </body>
+</html>

@@ -1,3 +1,4 @@
+import { useShowCodeTools } from "../../features/settings/model/codeTools";
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
 import { formatGitLabel } from "./gitLabel";
 import {
@@ -13,10 +14,11 @@ import {
   CurrentProjectIcon,
   useProjectLabel,
 } from "../../features/projects/ui/CurrentProjectIcon";
-import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
+import { SidebarAgents } from "../../features/agents-board/ui/SidebarAgents";
 import { CrewPanel } from "../../features/crew/ui/CrewPanel";
 import { clearCrewFocus } from "../../features/crew/model/focus";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
+import { useNeedsYou } from "../../features/needs/model/needsLive";
 import type { ChildChat } from "../../features/monos/model/delegationView";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
@@ -27,6 +29,9 @@ import { TerminalMark } from "../../features/terminalMirror/ui/TerminalMark";
 import { terminalStatusText } from "../../features/terminalMirror/model/list";
 import { confirmDelete } from "../../shared/ui/ConfirmDelete";
 import { leadRenameRow, subChatsByParent } from "../../features/hub/model/codingTeamList";
+import { inChatListScope, setChatListScope, useChatListScope } from "../../features/hub/model/chatListScope";
+import { isImportedChatId } from "../../features/chatImport/model/convert";
+import { pickChief } from "../../features/home/model/chief";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -93,6 +98,7 @@ import {
 import { MOD, SHIFT } from "../../platform/tauri/platform";
 import { useTrafficLightsVisible } from "../../platform/tauri/useTrafficLightsVisible";
 import { copyText } from "../../platform/tauri/clipboard";
+import { chatLink } from "../../features/sessions/model/threadLinks";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -116,7 +122,6 @@ import { MODE_COMMAND_STYLES } from "../../features/sessions/ui/modeCommands";
 import { OPERATOR_COMMAND } from "../../features/sessions/model/operatorCommand";
 import { ORCHESTRATOR_COMMAND } from "../../features/sessions/model/orchestratorCommand";
 import {
-  compareSessionSummaries,
   filterSessionsByArchive,
   filterSessionsByQuery,
 } from "../../features/sessions/data/sessionHistory";
@@ -166,6 +171,7 @@ import type {
 } from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
+import { NeedsFolderSection } from "./NeedsFolderSection";
 import {
   keybindingShortcutLabel,
   subscribeKeybindings,
@@ -224,13 +230,40 @@ import {
   reminderTime,
   type SessionReminder,
 } from "../../features/sessions/model/sessionReminders";
+// WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+import { useChatListInbox } from "../../features/settings/model/displayPrefs";
+import {
+  attentionWithApprovals,
+  compareInboxOrder,
+  inboxMenuChoices,
+  settleHeldBack,
+  snoozeUntil,
+  splitInboxSessions,
+  type ChatAttention,
+  type SnoozePreset,
+} from "../../features/sessions/model/chatListInbox";
+import {
+  settleChats,
+  snoozeChats,
+  unsettleChats,
+  unsnoozeChats,
+  useInboxDoc,
+  useInboxNow,
+} from "../../features/sessions/model/chatListInboxStore";
+import {
+  ChatListInboxNotice,
+  ChatListShelves,
+  SnoozeTimeDialog,
+} from "../../features/sessions/ui/ChatListInbox";
 import { SessionsEmpty } from "../../features/sessions/ui/SessionsEmpty";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
+import { ImportRailCard } from "../../features/chatImport/ui/ImportRailCard";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GitHistoryGraph } from "../../features/source-control/ui/GitHistoryGraph";
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import {
   isMonoSession,
+  isMonoSideChat,
   listMonos,
   monoForSession,
   MONO_STATUS_LABEL,
@@ -322,9 +355,19 @@ type Props = {
   workspaceSwitchPending?: boolean;
   workspaceSwitchError?: string;
   open: boolean;
+  /** Closes this panel. The title bar's own toggle goes away while the panel is open, so its header needs one. */
+  onToggleOpen?: () => void;
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
   approvalSessionIds: Set<string>;
+  /**
+   * The ids in `approvalSessionIds` that are listed because a worker they lead needs input, not for a need of the
+   * chat's own. A Lead can have an open question of its own and a worker's approval at once; the first is dated and
+   * a settle holds for it, the second is not and is never hidden (WP-113).
+   */
+  approvalElsewhereSessionIds?: Set<string>;
+  /** WP-113: why a listed chat needs the person, when settle and snooze is on. */
+  chatAttention?: ReadonlyMap<string, ChatAttention>;
   activeSessionId?: string;
   /** Open tabs, including blank ones not yet in history. */
   openSessions?: readonly SessionSummary[];
@@ -332,6 +375,8 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  /** A chat that had no folder was given one outside the window's own picker (Relink all): the open copy takes it too. */
+  onSetSessionFolder?: (sessionId: string, cwd: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
@@ -389,6 +434,10 @@ type Props = {
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
+  /** Dropwave, one chat: the Chats panel's own title ("Earlier chats" beside the Chief of Staff's one chat). */
+  chatsTitle?: string;
+  /** Dropwave, one chat: no "New chat" here (there is no new chat with the Chief of Staff). */
+  noNewChat?: boolean;
   onNewTerminal?: () => void;
   onSearch?: () => void;
   onOpenInbox?: () => void;
@@ -440,6 +489,8 @@ type Props = {
   monos?: MonoRailProps;
   /** Hub mode: project items shown in the rail instead of Projects. */
   hubItems?: ReactNode;
+  /** Dropwave: Home and the Chief of Staff, above everything else in the hub's sidebar. */
+  hubTopNav?: ReactNode;
   /** Hub mode: a hub view fills the main area. */
   hubSurfaceActive?: boolean;
   /** A Mono fills the main area, which has no project sidebar. */
@@ -458,7 +509,19 @@ export type CodingTeamList = {
   /** A project's coding team (its Lead pinned) or a Mono's own team (the Mono pinned). */
   kind: "coding" | "mono";
   /** The chat that owns the team: the project's Lead, or the Mono whose team it is. */
-  lead?: {
+  lead?: TeamLeadRow;
+  /**
+   * A project's chats are shared by the Chief of Staff and the project's Lead. This is the one not on top: listed only
+   * under "Everyone" (chatListScope.ts), and opening it puts it on top.
+   */
+  other?: TeamLeadRow;
+};
+
+/** A first mate's main chat as the row on top of its list. */
+export type TeamLeadRow = {
+    /** Whose list this is (chatListScope.ts): the first mate, and whether the folder's plain chats are theirs. */
+    monoId: string;
+    plainChats: boolean;
     /** Its chat as a row (a stand-in id until its chat exists). */
     session: SessionSummary;
     /** Its mascot, in the provider mark's place. */
@@ -475,7 +538,6 @@ export type CodingTeamList = {
      */
     chatTitle?: string;
     onOpen: () => void;
-  };
 };
 
 function openNotesFromSidebar(notesActive: boolean, docsMode: boolean, open?: () => void) {
@@ -501,14 +563,18 @@ function SidebarComponent({
   workspaceSwitchPending,
   workspaceSwitchError,
   open,
+  onToggleOpen,
   sessions,
   busySessionIds,
   approvalSessionIds,
+  approvalElsewhereSessionIds,
+  chatAttention,
   activeSessionId,
   openSessions = [],
   status,
   pending,
   onSelectSession: onSelectLocalSession,
+  onSetSessionFolder,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
   onSessionNavigationOrder,
@@ -555,6 +621,8 @@ function SidebarComponent({
   onOpenProject,
   onRemoveProject,
   onNew,
+  chatsTitle,
+  noNewChat = false,
   onSearch,
   onOpenInbox,
   onOpenInboxItem,
@@ -588,11 +656,14 @@ function SidebarComponent({
   onDismissUpdate,
   monos,
   hubItems,
+  hubTopNav,
   hubSurfaceActive = false,
   monoViewActive = false,
   codingTeam,
 }: Props) {
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
+  // WP-210: every Inbox mark on this sidebar is the one Needs you count.
+  const needsMark = useNeedsYou().length;
   const trafficLightsVisible = useTrafficLightsVisible();
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
@@ -779,6 +850,11 @@ function SidebarComponent({
   const [rightTabOrder, setRightTabOrder] =
     useState<RightPanelTab[]>(loadRightPanelTabOrder);
   const [now, setNow] = useState(() => Date.now());
+  // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+  const inboxOn = useChatListInbox();
+  const inboxDoc = useInboxDoc();
+  const inboxNow = useInboxNow(inboxOn);
+  const [snoozeChoiceIds, setSnoozeChoiceIds] = useState<readonly string[] | null>(null);
   const sessionsLock = useLockOverscroll<HTMLDivElement>();
   const sessionsScrollRef = useRef<HTMLDivElement>(null);
   const [sessionMenu, setSessionMenu] = useState<{
@@ -852,13 +928,37 @@ function SidebarComponent({
   const worktreeFocus = useWorktreeFocus(cwd);
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
+  // Dropwave (Ash, 11 Nov): a first mate's list holds that first mate's chats. A project's Lead and the Chief of Staff
+  // share the project's folder, so "Everyone" (the switch above the list) is what shows both.
+  const delegationRows = useDelegationRows();
+  const chatScope = useChatListScope();
+  const scopeOwner = codingTeam?.kind === "coding" ? codingTeam.lead : undefined;
+  const startedBy = new Map<string, string>();
+  if (scopeOwner && chatScope === "own") {
+    const at = new Map<string, number>();
+    for (const row of delegationRows) {
+      if ((at.get(row.childSession) ?? -1) > row.createdAt) continue;
+      at.set(row.childSession, row.createdAt);
+      startedBy.set(row.childSession, row.ownerSession);
+    }
+  }
+  const importedOwner = scopeOwner && chatScope === "own" ? pickChief(listMonos())?.id : undefined;
+  const inScope = (sessionId: string) =>
+    !scopeOwner ||
+    inChatListScope(chatScope, scopeOwner, sessionId, {
+      // A chat brought in from Claude Code or Codex is the Chief of Staff's, in the project it landed in.
+      monoOf: (id) => (importedOwner && isImportedChatId(id) ? importedOwner : monoForSession(id)?.id),
+      startedBy: (id) => startedBy.get(id),
+    });
   const listableSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
   ).filter(
     (session) =>
-      !isMonoSession(session.id) &&
+      // A first mate's main chat is its pinned row. Its further chats (Dropwave: "New chat" beside it) are listed.
+      (!isMonoSession(session.id) || isMonoSideChat(session.id)) &&
+      inScope(session.id) &&
       !("ephemeral" in session && session.ephemeral) &&
       !isHabitRun(session.id) &&
       !session.orchestrationLeadId &&
@@ -880,13 +980,31 @@ function SidebarComponent({
       !session.sidebarHidden ||
       !!startedSessionCaller(session.id, shownSessionIds),
   );
+  // WP-113: with the setting on, settled and snoozed chats leave the active list.
+  const inboxAttention = inboxOn
+    ? attentionWithApprovals(
+        chatAttention,
+        listedApprovalSessionIds,
+        // A remote project's flag says only that a chat needs input, so none of its ids is known to be a worker's.
+        remoteProject ? undefined : approvalElsewhereSessionIds,
+      )
+    : undefined;
+  const inboxRows = splitInboxSessions(listedSessions, {
+    enabled: inboxOn,
+    marks: inboxDoc.chats,
+    now: inboxNow,
+    attention: inboxAttention,
+  });
+  const inboxListed = inboxOn ? inboxRows.active : listedSessions;
+  const inboxCompare = (a: SessionSummary, b: SessionSummary) =>
+    compareInboxOrder(a, b, inboxOn, inboxAttention);
   const visibleSessions = [
     ...filterSessionsByQuery(
       filterSessionsByStatus(
         filterSessionsByTime(
           filterSessionsByHarness(
             filterSessionsByArchive(
-              listedSessions,
+              inboxListed,
               sessionFilters.showArchived,
             ),
             sessionFilters.hiddenHarnesses,
@@ -901,12 +1019,11 @@ function SidebarComponent({
       ),
       searchQuery,
     ),
-  ].sort(compareSessionSummaries);
+  ].sort(inboxCompare);
   // The inset list hangs the sessions an /operator thread started under it,
   // like an orchestrator's agents, rather than listing them on their own. A
   // coding team nests every chat a chat started under the chat Ash talks to
   // (its sub-chats), from its delegation rows and its started chats' ids.
-  const delegationRows = useDelegationRows();
   const teamSubChats = codingTeam
     ? subChatsByParent(
         [
@@ -915,7 +1032,7 @@ function SidebarComponent({
             .filter((session) => !session.id.startsWith("app-"))
             .map((session) => session.id),
         ],
-        listedSessions,
+        inboxListed,
         // A brief to a project's Lead is that coding team's work, never a sub-chat of the Mono that sent it: without
         // its row, the Lead's workers can't climb through it into the Mono's own team.
         delegationRows.filter((row) => row.follow !== "lead"),
@@ -976,6 +1093,7 @@ function SidebarComponent({
     ungroupedVisible,
     pinnedSessionsCollapsed,
     reminderGroup,
+    inboxCompare,
   );
   const sessionListEntries = buildSessionList(
     listedVisibleSessions,
@@ -983,10 +1101,20 @@ function SidebarComponent({
     shownUngrouped,
     pinnedSessionsCollapsed,
     reminderGroup,
+    inboxCompare,
   );
   const firstLooseSessionIndex = sessionListEntries.findIndex(
     (entry) => entry.kind === "session",
   );
+  // Ash (12 Nov): "the newest chat should be at the top unless pinned". The first mate's own chat is no longer held on
+  // top: in the wide list it sits among its other chats by when it last moved. The narrow list keeps it on top.
+  const leadInline =
+    !inset && !!teamLead && !filtersActive && !searchNarrowed && visibleSessions.length > 0;
+  const leadInsertIndex = teamLead
+    ? sessionListEntries.findIndex(
+        (entry) => entry.kind === "session" && (entry.session.updatedAt ?? 0) < (teamLead.session.updatedAt ?? 0),
+      )
+    : -1;
   // Reminders, folders and Pinned come first, under one label.
   const firstGroupIndex = sessionListEntries.findIndex(
     (entry) => entry.kind !== "session",
@@ -1036,7 +1164,17 @@ function SidebarComponent({
   const sessionListKey = `${cwd}\0${sessionFilters.showArchived}\0${sessionFilters.time}\0${sessionFilters.hiddenHarnesses.join(",")}\0${sessionFilters.status.working}\0${sessionFilters.status.needsApproval}\0${sessionFilters.status.done}\0${searchQuery}`;
   const sessionHarnesses = harnessesInSessions(projectSessions);
   const narrowedByUser = searchNarrowed || filtersActive;
-  const visibleTabs = tabOrder.filter((itemId) => itemId !== "inbox");
+  // Dropwave: Explorer and Changes only when Settings > Advanced shows code tools.
+  const codeTools = useShowCodeTools();
+  // Dropwave (Ash, 11 Nov): Crew goes with them. A chat's own "N working" line already says who is on it, so the list
+  // is just the chats, the same for every first mate.
+  const visibleTabs = tabOrder.filter(
+    (itemId) => itemId !== "inbox" && (codeTools || (itemId !== "files" && itemId !== "changes" && itemId !== "crew")),
+  );
+  const tabHidden = tab !== "sessions" && tab !== "inbox" && !visibleTabs.includes(tab);
+  useEffect(() => {
+    if (tabHidden) onTabChange("sessions");
+  }, [tabHidden, onTabChange]);
   const onReorderTabs = (ids: SidebarTab[]) => {
     const reordered = new Set(ids);
     let index = 0;
@@ -1626,6 +1764,16 @@ function SidebarComponent({
           },
         ]
       : []),
+    // WP-125: a link that opens this chat on this computer. In the hub it lives here, not as a button over the chat.
+    ...(!multipleMenuSessions && menuSessions[0] && chatLink(menuSessions[0].id)
+      ? [
+          {
+            kind: "item" as const,
+            id: "copy-chat-link",
+            label: "Copy chat link",
+          },
+        ]
+      : []),
     ...(!multipleMenuSessions
       ? [
           {
@@ -1688,6 +1836,27 @@ function SidebarComponent({
               ? "Remove from folders"
               : "Remove from folder",
           },
+        ]
+      : []),
+    // WP-113: settle and snooze. These do not archive or delete the chat.
+    ...(inboxOn
+      ? [
+          { kind: "sep" as const },
+          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow), inboxAttention).map(
+            (choice) => ({
+              kind: "item" as const,
+              id: choice.id,
+              label: choice.label,
+              description: choice.description,
+              disabled: choice.disabled,
+              submenu: choice.children?.map((child) => ({
+                kind: "item" as const,
+                id: child.id,
+                label: child.label,
+                disabled: child.disabled,
+              })),
+            }),
+          ),
         ]
       : []),
     ...(onArchiveSession ||
@@ -1791,6 +1960,11 @@ function SidebarComponent({
       setRenamingSessionId(sessionId);
       return;
     }
+    if (id === "copy-chat-link") {
+      const link = sessionIds[0] ? chatLink(sessionIds[0]) : null;
+      if (link) void copyText(link).catch(() => {});
+      return;
+    }
     if (id === "copy-harness-session-id" || id === "copy-monocode-session-id") {
       const value =
         id === "copy-harness-session-id" ? providerSessionId : sessionId;
@@ -1831,6 +2005,33 @@ function SidebarComponent({
           sessionFolders,
         ),
       );
+      return;
+    }
+    // WP-113: settle and snooze never archive or delete the chat.
+    if (id === "inbox-settle") {
+      // An approval waiting on a chat is never hidden: the menu item is off, and a late pick does nothing either.
+      if (settleHeldBack(sessionIds, inboxAttention)) return;
+      settleChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-unsettle") {
+      unsettleChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-unsnooze") {
+      unsnoozeChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-snooze:choose") {
+      setSnoozeChoiceIds(sessionIds);
+      return;
+    }
+    if (id.startsWith("inbox-snooze:")) {
+      const until = snoozeUntil(
+        id.slice("inbox-snooze:".length) as SnoozePreset,
+        new Date(inboxNow),
+      );
+      if (until != null) snoozeChats(sessionIds, until);
       return;
     }
     if (id === "archive") {
@@ -2029,7 +2230,7 @@ function SidebarComponent({
 
   // The coding team's Lead: a row like any chat's, with its mascot and a pin,
   // that opens its chat in the coding team, its sub-chats folded under it.
-  const renderLeadCard = (lead: NonNullable<CodingTeamList["lead"]>) => {
+  const renderLeadCard = (lead: TeamLeadRow) => {
     const subChats = teamSubChats?.byParent.get(lead.session.id) ?? [];
     const stuck = [...subChatAttention(subChats, now).stuck.values()];
     const renameRow = onRenameSession ? leadRenameRow(lead) : undefined;
@@ -2048,7 +2249,9 @@ function SidebarComponent({
           />
         ) : (
         <SessionCard
-          session={lead.session}
+          // Dressed like the first mate's other chats: its mascot and name on the top line, the chat's own title under
+          // it. Ash (12 Nov): there is no "main chat", only the first mate, so it is one chat among its others.
+          session={inset ? lead.session : { ...lead.session, title: lead.chatTitle?.trim() || lead.session.title }}
           isActive={lead.active}
           isSelected={false}
           busy={lead.busy}
@@ -2057,6 +2260,7 @@ function SidebarComponent({
           needsApproval={false}
           dense={inset}
           mark={lead.mark}
+          markLabel={lead.session.title}
           badge={stuck.length ? <StuckMark stuck={stuck} hideOnHover={false} /> : undefined}
           statusLabel={lead.statusLabel}
           now={now}
@@ -2177,6 +2381,12 @@ function SidebarComponent({
         startedOpen={startedOpen}
         startedInView={startedInView}
         badge={badge ?? (session.terminal ? <TerminalMark /> : undefined)}
+        // Dropwave: a first mate's further chat wears its mascot and name, so the list says who each chat is with.
+        {...sideChatMark(session.id)}
+        // Ash (12 Nov): on a first mate's own list every chat is that first mate's, so each says so, not its model.
+        {...(!nested && scopeOwner && chatScope === "own" && !isMonoSideChat(session.id)
+          ? { mark: scopeOwner.mark, markLabel: scopeOwner.session.title }
+          : {})}
         // WP-85: a terminal session shows its state and folder instead of the clock.
         {...(session.terminal ? { statusLabel: terminalStatusText(session.terminal) } : {})}
         subChatsBelow={subChatsBelow}
@@ -2646,9 +2856,10 @@ function SidebarComponent({
       }
       items={[
         onOpenInbox && {
-          label: "Inbox",
+          label: "Needs you",
           icon: Inbox,
           active: inboxActive,
+          needs: needsMark,
           dot: inboxUnseen,
           onClick: onOpenInbox,
           onOpenContextMenu: (x, y) => {
@@ -2681,7 +2892,7 @@ function SidebarComponent({
           onClick: onOpenAutomations,
         },
         onOpenPages && {
-          label: "Pages",
+          label: "Hubs",
           icon: DashboardSquare,
           active: pagesActive,
           onClick: onOpenPages,
@@ -2788,10 +2999,42 @@ function SidebarComponent({
           switches projects. */}
       {railVisible || inset ? (
         <>
-          {workspaceHeader}
+          {/* Dropwave: the worktree picker is a code tool (Settings > Advanced). */}
+          {codeTools ? (
+            workspaceHeader
+          ) : !inset && onNew ? (
+            // With the code tools off there is still a way to start a new chat here.
+            <div
+              className={`flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pr-1.5 ${onToggleOpen ? "pl-1.5" : "pl-3"}`}
+              data-sidebar-chats-header
+            >
+              {/* The title bar's toggle is hidden while this panel is open: without this there was no way to close it
+                  again except the shortcut (Ash, 13 Nov). Same icon, same place, so it reads as the same switch. */}
+              {onToggleOpen ? (
+                <span data-sidebar-chats-close className="flex">
+                  <IconButton label={`Hide chats (${MOD}${SHIFT}B)`} onClick={onToggleOpen}>
+                    <DashboardSquare className="size-3.5" strokeWidth={1.75} />
+                  </IconButton>
+                </span>
+              ) : null}
+              <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">{chatsTitle ?? "Chats"}</span>
+              {noNewChat ? null : (
+                <button
+                  type="button"
+                  onClick={onNew}
+                  aria-label="New chat"
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-content/70 hover:bg-content/8 hover:text-content"
+                >
+                  <Plus className="size-3.5" strokeWidth={1.75} />
+                  New chat
+                </button>
+              )}
+            </div>
+          ) : null}
           {/* The inset sidebar has no tabs: the project tools live in the
               right panel. */}
-          {inset ? null : (
+          {/* One tab is no choice: with only the chats left there is no tab row. */}
+          {inset || visibleTabs.length < 2 ? null : (
             <div
               role="tablist"
               aria-label="Workspace"
@@ -2843,9 +3086,10 @@ function SidebarComponent({
               notesActive={notesActive}
               automationsActive={automationsActive}
               inboxUnseen={inboxUnseen}
+              needsMark={needsMark}
             />
           ) : null}
-          {!compactRailVisible ? (
+          {!compactRailVisible && visibleTabs.length > 1 ? (
             <div
               role="tablist"
               aria-label="Workspace"
@@ -2904,6 +3148,15 @@ function SidebarComponent({
           {/* Hub mode: the project's items, which the classic rail lists in
               place of Projects. */}
           {inset ? hubItems : null}
+          {/* Chats that came in from an export with no folder here: listed together until each gets one. */}
+          {!remoteProject ? (
+            <NeedsFolderSection
+              onSelect={onSelectSession}
+              activeSessionId={activeSessionId}
+              openSessions={openSessions}
+              onRelinked={onSetSessionFolder}
+            />
+          ) : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>
@@ -2922,7 +3175,37 @@ function SidebarComponent({
             <div>
               {/* A team's owner (a coding team's Lead, or the Mono whose team it is), pinned at the top: its default
                   chat (Ash, 20 Oct). */}
+              {scopeOwner ? (
+                <div
+                  role="group"
+                  aria-label="Whose chats"
+                  data-chat-scope={chatScope}
+                  className={`flex items-center gap-1 ${inset ? "px-2 pt-1" : "px-1.5 pt-1.5"}`}
+                >
+                  {(
+                    [
+                      ["own", scopeOwner.session.title, `Only chats with ${scopeOwner.session.title}`],
+                      ["all", "Everyone", "Every chat in this project"],
+                    ] as const
+                  ).map(([scope, label, hint]) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      title={hint}
+                      aria-pressed={chatScope === scope}
+                      data-chat-scope-option={scope}
+                      onClick={() => setChatListScope(scope)}
+                      className={`h-6 min-w-0 truncate rounded-md px-2 text-[12px] ${
+                        chatScope === scope ? "bg-content/12 text-content" : "text-content/60 hover:bg-content/5 hover:text-content"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               {teamLead &&
+              (!leadInline || (scopeOwner && chatScope === "all" && codingTeam?.other)) &&
               !filtersActive &&
               (!searchNarrowed ||
                 filterSessionsByQuery([teamLead.session], searchQuery).length > 0) ? (
@@ -2932,7 +3215,13 @@ function SidebarComponent({
                   className={`flex flex-col ${inset ? "gap-px px-2 pt-1" : "gap-0.5 p-1.5 pb-0"}`}
                 >
                   {/* Keyed by its chat: another team's owner is another row, not this one's title changing. */}
-                  <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>
+                  {leadInline ? null : <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>}
+                  {/* Everyone: the other first mate who shares this project's chats. Opening it puts it on top. */}
+                  {scopeOwner && chatScope === "all" && codingTeam?.other ? (
+                    <li key={codingTeam.other.session.id} data-coding-team-other={codingTeam.other.monoId}>
+                      {renderLeadCard(codingTeam.other)}
+                    </li>
+                  ) : null}
                 </ul>
               ) : null}
               {/*
@@ -3233,7 +3522,7 @@ function SidebarComponent({
                                     </SessionListItem>
                                   ))}
                                 </ul>
-                                {onNew ? (
+                                {onNew && !noNewChat ? (
                                   <div
                                     className={
                                       inset
@@ -3279,7 +3568,7 @@ function SidebarComponent({
                         folderItem
                       );
                     }
-                    const item = (
+                    const sessionItem = (
                       <SessionListItem
                         key={entry.session.id}
                         session={entry.session}
@@ -3289,6 +3578,18 @@ function SidebarComponent({
                         {renderSessionCard(entry.session)}
                       </SessionListItem>
                     );
+                    // The first mate's own chat takes its place by time among the others (newest first).
+                    const item =
+                      leadInline && teamLead && index === leadInsertIndex ? (
+                        <Fragment key={entry.session.id}>
+                          <li key={teamLead.session.id} data-coding-team-lead={teamLead.session.id} data-team-kind={codingTeam?.kind}>
+                            {renderLeadCard(teamLead)}
+                          </li>
+                          {sessionItem}
+                        </Fragment>
+                      ) : (
+                        sessionItem
+                      );
                     const ageLabel = looseSessionLabels.get(index);
                     return ageLabel ? (
                       <Fragment key={entry.session.id}>
@@ -3312,6 +3613,11 @@ function SidebarComponent({
                   {sessionsLabel && firstLooseSessionIndex < 0 ? (
                     <li className="list-none">{sessionsLabel}</li>
                   ) : null}
+                  {leadInline && teamLead && leadInsertIndex < 0 ? (
+                    <li key={teamLead.session.id} data-coding-team-lead={teamLead.session.id} data-team-kind={codingTeam?.kind}>
+                      {renderLeadCard(teamLead)}
+                    </li>
+                  ) : null}
                   {hasMoreSessions ? (
                     <li
                       ref={loadMoreRef}
@@ -3321,6 +3627,32 @@ function SidebarComponent({
                   ) : null}
                 </ul>
               )}
+              {/* WP-113: settled and snoozed chats stay listed, off the active rows. */}
+              {inboxOn ? (
+                <ChatListShelves
+                  settled={inboxRows.settled.map((session) => ({
+                    id: session.id,
+                    title: session.title || "New session",
+                  }))}
+                  snoozed={inboxRows.snoozed.map((session) => ({
+                    id: session.id,
+                    title: session.title || "New session",
+                  }))}
+                  onOpen={onSelectLocalSession}
+                  onUnsettle={(sessionId) => unsettleChats([sessionId])}
+                  onUnsnooze={(sessionId) => unsnoozeChats([sessionId])}
+                />
+              ) : null}
+              <ChatListInboxNotice />
+              {snoozeChoiceIds ? (
+                <SnoozeTimeDialog
+                  onClose={() => setSnoozeChoiceIds(null)}
+                  onSnooze={(until) => {
+                    snoozeChats(snoozeChoiceIds, until);
+                    setSnoozeChoiceIds(null);
+                  }}
+                />
+              ) : null}
             </div>
           )}
         </div>
@@ -3334,6 +3666,10 @@ function SidebarComponent({
               onSelect={onSelectAgent}
               bottomSpacing={compactRailVisible}
             />
+            {/* Past chats coming in, and the rules read from them, while the app stays usable. */}
+            <div className="shrink-0 px-2 pt-2 empty:hidden">
+              <ImportRailCard />
+            </div>
             <SidebarUpdateFooter
               update={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}
@@ -3468,6 +3804,7 @@ function SidebarComponent({
           hasChanges={hasChanges}
           hasUnseenFinished={hasUnseenFinished}
           inboxUnseen={inboxUnseen}
+          needsMark={needsMark}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
           onRemoveProject={onRemoveProject}
@@ -3500,6 +3837,7 @@ function SidebarComponent({
           cwd={cwd}
           recents={recents}
           inboxUnseen={inboxUnseen}
+          needsMark={needsMark}
           busyPaths={busyProjectPaths}
           liveAgents={liveAgents}
           activeSessionId={activeSessionId}
@@ -3534,6 +3872,7 @@ function SidebarComponent({
           onDismissUpdate={onDismissUpdate}
           monos={railMonos}
           hubItems={hubItems}
+          hubTopNav={hubTopNav}
         />
       ) : null}
     </>
@@ -3675,6 +4014,7 @@ function SidebarProjectPicker({
   notesActive = false,
   automationsActive = false,
   inboxUnseen = false,
+  needsMark = 0,
 }: {
   cwd: string;
   recents: RecentProject[];
@@ -3695,6 +4035,7 @@ function SidebarProjectPicker({
   notesActive?: boolean;
   automationsActive?: boolean;
   inboxUnseen?: boolean;
+  needsMark?: number;
 }) {
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
@@ -3733,7 +4074,7 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenInbox ? (
           <IconButton
-            label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+            label={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
             active={inboxActive}
             onClick={onOpenInbox}
             onOpenContextMenu={(x, y) => {
@@ -3746,11 +4087,16 @@ function SidebarProjectPicker({
           >
             <span className="relative">
               <Inbox className="size-3.5" strokeWidth={1.75} />
-              {inboxUnseen ? (
+              {needsMark > 0 ? (
                 <span
-                  aria-hidden
-                  className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent"
-                />
+                  data-inbox-needs={needsMark}
+                  className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full px-0.5 text-[9px] leading-none text-white"
+                  style={{ background: "#e5484d" }}
+                >
+                  {needsMark > 99 ? "99+" : needsMark}
+                </span>
+              ) : inboxUnseen ? (
+                <span data-inbox-unseen="" aria-hidden className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
               ) : null}
             </span>
           </IconButton>
@@ -3783,7 +4129,7 @@ function SidebarProjectPicker({
           </IconButton>
         ) : null}
         {onOpenPages ? (
-          <IconButton label="Pages" active={pagesActive} onClick={onOpenPages}>
+          <IconButton label="Hubs" active={pagesActive} onClick={onOpenPages}>
             <DashboardSquare className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
@@ -3816,6 +4162,7 @@ function CompactProjectRail({
   hasChanges,
   hasUnseenFinished,
   inboxUnseen,
+  needsMark = 0,
   onSelectProject,
   onOpenProject,
   onRemoveProject,
@@ -3851,6 +4198,7 @@ function CompactProjectRail({
   /** A session here finished a reply the user has not opened. */
   hasUnseenFinished: boolean;
   inboxUnseen: boolean;
+  needsMark?: number;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
   onRemoveProject?: Props["onRemoveProject"];
@@ -4032,9 +4380,10 @@ function CompactProjectRail({
           onClick={action(searchActive, onSearch)}
         />
         <CompactRailAction
-          label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+          label={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
           icon={Inbox}
           active={inboxActive}
+          needs={needsMark}
           dot={inboxUnseen}
           onClick={action(inboxActive, onOpenInbox)}
           onOpenContextMenu={(x, y) => {
@@ -4069,7 +4418,7 @@ function CompactProjectRail({
         />
         {onOpenPages ? (
           <CompactRailAction
-            label="Pages"
+            label="Hubs"
             icon={DashboardSquare}
             active={pagesActive}
             onClick={action(pagesActive, onOpenPages)}
@@ -4164,6 +4513,7 @@ function CompactRailAction({
   tab = false,
   active = false,
   dot = false,
+  needs,
   onClick,
   onOpenContextMenu,
 }: {
@@ -4178,6 +4528,8 @@ function CompactRailAction({
   tab?: boolean;
   active?: boolean;
   dot?: boolean;
+  /** WP-210: the Inbox mark, in place of the tracker dot. */
+  needs?: number;
   onClick?: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
 }) {
@@ -4234,7 +4586,15 @@ function CompactRailAction({
         className={`size-4 ${dot ? "compact-rail-icon-with-dot" : ""}`}
         strokeWidth={1.75}
       />
-      {dot ? (
+      {needs != null && needs > 0 ? (
+        <span
+          data-inbox-needs={needs}
+          className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full px-0.5 text-[9px] leading-none text-white"
+          style={{ background: "#e5484d" }}
+        >
+          {needs > 99 ? "99+" : needs}
+        </span>
+      ) : dot ? (
         <span
           aria-hidden
           className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-accent"
@@ -4579,6 +4939,18 @@ export function groupStartedSessions<T extends { id: string }>(
 
 const NO_MODIFIERS = { shiftKey: false, ctrlKey: false, metaKey: false };
 
+/** The mascot and name of the first mate a further chat is with (monos/model/mono.ts `chats`); nothing for any other chat. */
+function sideChatMark(sessionId: string): { mark?: ReactNode; markLabel?: string } {
+  if (!isMonoSideChat(sessionId)) return {};
+  const mono = monoForSession(sessionId);
+  if (!mono) return {};
+  const look = monoLook(mono);
+  return {
+    mark: <MonoRailMascot name={look.mascot} color={look.color} status="idle" className="size-3.5 shrink-0" />,
+    markLabel: look.name,
+  };
+}
+
 /** The Mono a team chat's workers answer to, by name ("EXO lead"), for "2 with EXO lead" (r30b). */
 function teamLeadName(session: string): string {
   const mono = monoForSession(session);
@@ -4650,6 +5022,7 @@ type SidebarNavItem = {
   shortcut?: string;
   active?: boolean;
   dot?: boolean;
+  needs?: number;
   onClick: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
 };
@@ -4686,15 +5059,16 @@ function SidebarNavList({
         </>
       ) : null}
       {shown.map(
-        ({ label, icon, shortcut, active, dot, onClick, onOpenContextMenu }) => (
+        ({ label, icon, shortcut, active, dot, needs, onClick, onOpenContextMenu }) => (
           <RailAction
             key={label}
             label={label}
             icon={icon}
             shortcut={shortcut}
             active={active}
-            dot={dot}
-            ariaLabel={dot ? `${label}, new items` : undefined}
+            dot={needs != null && needs > 0 ? false : dot}
+            needs={needs}
+            ariaLabel={needs != null && needs > 0 ? (label === "Needs you" ? `Needs you, ${needs}` : `${label}, ${needs} needs you`) : dot ? `${label}, new items` : undefined}
             onClick={onClick}
             onOpenContextMenu={onOpenContextMenu}
           />
@@ -5169,6 +5543,7 @@ export const SessionCard = memo(function SessionCard({
   modelInFooter = false,
   statusLabel,
   mark,
+  markLabel,
   badge,
   subChatsBelow = false,
   project,
@@ -5214,6 +5589,8 @@ export const SessionCard = memo(function SessionCard({
   statusLabel?: string;
   /** In the provider mark's place (a coding team's Lead shows its mascot). */
   mark?: ReactNode;
+  /** In the model name's place beside the mark: who the chat is with (a first mate's further chat). */
+  markLabel?: string;
   /** Beside its status: a coding team's chat is marked when one of its sub-chats is stuck. */
   badge?: ReactNode;
   /** Its sub-chats' fold sits right under it, as under a coding team's Lead: a footer line with nothing in it but
@@ -5844,8 +6221,8 @@ export const SessionCard = memo(function SessionCard({
                       className="size-3.5 shrink-0"
                     />
                   )}
-                  <span title={model ?? undefined} className="min-w-0 truncate text-[11px] text-content/50">
-                    {model}
+                  <span title={markLabel ?? model ?? undefined} className="min-w-0 truncate text-[11px] text-content/50">
+                    {markLabel ?? model}
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5">
@@ -5884,7 +6261,8 @@ export const SessionCard = memo(function SessionCard({
             )}
           </div>
           {orchestrationExpanded && !dense ? (
-            <OrchestrationSidebarAgents
+            // WP-219: the orchestration tree opens the Agents board in the Hub bundle.
+            <SidebarAgents
               leadId={session.id}
               summary={orchestration!}
             />
@@ -6083,7 +6461,8 @@ export const SessionCard = memo(function SessionCard({
         >
           {/* One item, padding and all, for the reveal to grow. */}
           <div>
-            <OrchestrationSidebarAgents
+            {/* WP-219: the orchestration tree opens the Agents board in the Hub bundle. */}
+            <SidebarAgents
               leadId={session.id}
               summary={orchestration}
               variant="tree"

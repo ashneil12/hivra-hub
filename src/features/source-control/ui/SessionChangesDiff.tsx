@@ -16,6 +16,7 @@ import { forEachConcurrent } from "../../../shared/lib/concurrent";
 import type { UnifiedFileDiff } from "../model/unifiedDiff";
 import { prepareUnifiedDiff } from "../model/diffWorker";
 import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
+import { ReviewDiff } from "./ReviewDiff";
 import { pruneMap } from "../model/stableDiff";
 
 type Props = {
@@ -197,6 +198,14 @@ export function SessionChangesDiff({
         additions: file.additions,
         deletions: file.deletions,
         blocks: unified?.blocks ?? [],
+        beforeText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error
+            ? loaded.original
+            : undefined,
+        afterText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error
+            ? loaded.current
+            : undefined,
       };
     });
   }, [diffs, files]);
@@ -247,7 +256,7 @@ export function SessionChangesDiff({
   }
 
   return (
-    <UnifiedDiffView
+    <ReviewDiff
       files={models}
       visible={visible}
       focusPath={focusPath}

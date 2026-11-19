@@ -97,7 +97,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
     await page.waitForTimeout(800);
   };
 
-  await page.getByRole("complementary").first().getByRole("button", { name: /^Inbox/ }).first().click();
+  await page.getByRole("complementary").first().getByRole("button", { name: /^Needs you/ }).first().click();
   await page.waitForTimeout(2500);
   await label("Inbox");
   await settle();

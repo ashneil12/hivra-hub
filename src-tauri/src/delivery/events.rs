@@ -182,7 +182,10 @@ pub fn classify(read: &PrRead, changes: Option<&[Change]>) -> Vec<News> {
                 kind: Kind::CiGreen,
                 detail: None,
             }),
-            Change::Remarks(_) | Change::Conflicting => {}
+            Change::Remarks(_)
+            | Change::Conflicting
+            | Change::BaseMoved { .. }
+            | Change::Behind { .. } => {}
         }
     }
     news
@@ -352,3 +355,8 @@ pub fn fix_ask(gh: &dyn Github, repo: &str, number: u64) -> Result<String, Strin
     }
     Ok(ask)
 }
+
+// SC-6: property tests on the delivery event transitions (spec 4i).
+#[cfg(test)]
+#[path = "events_prop_tests.rs"]
+mod prop_tests;

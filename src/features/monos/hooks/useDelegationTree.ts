@@ -11,6 +11,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
+import { withdrawRunningTurn } from "../../sessions/model/withdrawnTurn";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import {
   isQuestionWakeFor,
@@ -195,6 +196,13 @@ export function useDelegationTree(options: {
   );
   const stopFromUser = useCallback(
     (sessionId: string, managed = false) => {
+      // WP-243: Ash stopped this turn, so its words are withdrawn: they stay in the chat but no longer cover an action.
+      if (!managed) {
+        const mark = (all: Session[]) =>
+          all.map((session) => (session.id === sessionId ? withdrawRunningTurn(session, "stopped") : session));
+        latest.current.sessionsRef.current = mark(latest.current.sessionsRef.current);
+        latest.current.setSessions(mark);
+      }
       if (
         managed ||
         !isOrchestratorChat(sessionId) ||

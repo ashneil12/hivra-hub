@@ -3,10 +3,18 @@ import { HARNESS_TITLE, sessionDisplayTitle, type Session } from "../../sessions
 import { loadSoundsEnabled, playCue } from "../../settings/model/sounds";
 import {
   allowsProjectNotification,
+  projectNotificationVerdict,
+  type NotificationCategory,
   type NotificationSubject,
 } from "./notificationPreferences";
 import { monoReplyText } from "../../monos/model/monoReaction";
 import { knownNotificationProject } from "./notificationProjects";
+import {
+  commitNotable,
+  readNotableBuffer,
+  saveNotableBuffer,
+  type NotablePing,
+} from "./notableEvents";
 
 const KEY = "monocode.notifications";
 
@@ -112,7 +120,8 @@ export type InputNotificationEvent = {
   kind: "approval" | "question";
   requestId: number;
 };
-export type NotificationEvent = "finished" | InputNotificationEvent;
+/** `failed` is a turn that ended in an error. It is announced as a failure, and quiet hours never hold it. */
+export type NotificationEvent = "finished" | "failed" | InputNotificationEvent;
 
 type PendingInputNotification = {
   session: Session;
@@ -173,6 +182,9 @@ export function notificationText(
   const title = "MonoCode";
   const subtitle = sessionDisplayTitle(session.title, session.harness);
   const harness = HARNESS_TITLE[session.harness];
+  if (event === "failed") {
+    return { title, subtitle, body: clip(`${harness} stopped with an error`) };
+  }
   if (event !== "finished") {
     if (event.kind === "question") {
       const question =
@@ -236,16 +248,19 @@ export async function notifySession(
   if (!project) return false;
   return notifyProjectSession(session, event, sessionVisible, {
     projectId: project.id,
-    category: event === "finished" ? "agentFinished" : "agentInput",
+    category: typeof event === "object" ? "agentInput" : "agentFinished",
     occurredAt,
+    ...(event === "failed" ? { failure: true } : {}),
   });
 }
 
+/** `failed` is a turn that ended in an error: it reads as a failure and is not held overnight (WP-164). */
 export function announceSessionFinished(
   session: Session,
   sessionVisible: boolean,
+  failed = false,
 ): Promise<void> {
-  return announceSession(session, "finished", sessionVisible);
+  return announceSession(session, failed ? "failed" : "finished", sessionVisible);
 }
 
 export function announceSessionInput(
@@ -266,11 +281,12 @@ async function announceSession(
   const occurredAt = Date.now();
   const project = knownNotificationProject(session.cwd);
   if (!project) return;
-  const finished = event === "finished";
+  const finished = typeof event !== "object";
   const subject: NotificationSubject = {
     projectId: project.id,
     category: finished ? "agentFinished" : "agentInput",
     occurredAt,
+    ...(event === "failed" ? { failure: true } : {}),
   };
   const sent = await notifyProjectSession(
     session,
@@ -287,7 +303,8 @@ async function notifyProjectSession(
   sessionVisible: boolean,
   subject: NotificationSubject,
 ): Promise<boolean> {
-  if (!allowsProjectNotification(subject)) return false;
+  const verdict = projectNotificationVerdict(subject);
+  if (verdict === "muted") return false;
   const decision = shouldNotify({
     enabled: loadNotificationsEnabled(),
     permission,
@@ -296,6 +313,17 @@ async function notifyProjectSession(
   });
   if (!decision) return false;
   const { title, subtitle, body } = notificationText(session, event);
+  if (verdict === "quiet") {
+    // WP-164: quiet hours hold this banner and its sound. It is kept, and leaves as one ping when the window ends
+    // (notableDelivery.ts). Only a banner that would have been shown is kept.
+    commitNotable(readNotableBuffer, saveNotableBuffer, {
+      id: `held:${session.id}:${subject.occurredAt ?? Date.now()}`,
+      kind: "held",
+      text: `${subtitle}: ${body}`,
+      at: subject.occurredAt ?? Date.now(),
+    });
+    return false;
+  }
   try {
     await invoke("show_notification", {
       sessionId: session.id,
@@ -350,4 +378,58 @@ export async function announceStuckWorker(notice: {
     }
   }
   playCue("inputRequested", subject);
+}
+
+/**
+ * A failure about work in these project folders (a red CI on a watched pull request). Quiet hours never hold it, but
+ * a mute of `category` on any of those projects still silences it. A folder that is no known project has no mute.
+ */
+export function failureNoticeAllowed(
+  folders: ReadonlyArray<string | null | undefined>,
+  category: NotificationCategory,
+  occurredAt: number,
+): boolean {
+  for (const folder of folders) {
+    const project = folder ? knownNotificationProject(folder) : undefined;
+    if (!project) continue;
+    const verdict = projectNotificationVerdict({ projectId: project.id, category, occurredAt, failure: true });
+    if (verdict === "muted") return false;
+  }
+  return true;
+}
+
+/** `shown`: the system took it. `off`: notifications are off or denied, so none is owed. `failed`: try again later. */
+export type PingResult = "shown" | "off" | "failed";
+
+/** Click target of a batched ping. It names no chat, so a click only brings the app forward. */
+const NOTABLE_PING_ID = "programme-notices";
+
+/**
+ * Whether a batched programme ping would be shown: banners on and not denied. It belongs to no chat, so the window
+ * being focused does not excuse it.
+ */
+export function notablePingsOn(): boolean {
+  return shouldNotify({
+    enabled: loadNotificationsEnabled(),
+    permission,
+    windowFocused,
+    sessionVisible: false,
+  });
+}
+
+/** One batched programme ping (notableEvents.ts), under the same OS policy as any banner. */
+export async function announceNotablePing(ping: NotablePing): Promise<PingResult> {
+  if (!notablePingsOn()) return "off";
+  try {
+    await invoke("show_notification", {
+      sessionId: NOTABLE_PING_ID,
+      title: "MonoCode",
+      subtitle: ping.title,
+      body: ping.body,
+      sound: loadSoundsEnabled(),
+    });
+    return "shown";
+  } catch {
+    return "failed";
+  }
 }

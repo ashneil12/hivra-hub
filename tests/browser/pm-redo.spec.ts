@@ -218,7 +218,7 @@ test("Reduced motion stops the bob and the blink", async ({ page }) => {
 
 test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
   await open(page);
-  await page.getByRole("button", { name: /^Pages/ }).first().click();
+  await page.getByRole("button", { name: /^Hubs/ }).first().click();
   // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
   // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
   await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
@@ -226,7 +226,7 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
   // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
   // build here, as in agents-page, so the preview it draws is what this checks.
   await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
-  await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
+  await page.getByLabel("Describe the hub").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   const calendar = page.locator("[data-block-calendar]").first();
   await expect(calendar).toBeVisible({ timeout: 30_000 });
@@ -270,6 +270,9 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
   await expect(working).toHaveClass(/bg-content\/60/);
   expect(await working.evaluate((d) => (d as HTMLElement).style.backgroundColor)).toBe("");
   // Sampled through the hop (the working creature moves), every dot stays clear of creature and text.
+  // The pointer still rests on the row clicked last, and a hovered row's title is held back for the app's own
+  // tooltip, which would drop that row from the sample below. Park it off the rail first.
+  await page.mouse.move(1400, 880);
   for (let frame = 0; frame < 12; frame += 1) {
     const clear = await dotsClear(rail);
     expect(clear.length).toBeGreaterThan(7);

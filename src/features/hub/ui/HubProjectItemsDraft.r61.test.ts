@@ -41,8 +41,10 @@ it("shows no project's name or items while a new project's draft is open", async
   expect(host.textContent ?? "").not.toContain("Hivra");
 });
 
-it("still shows the project's name and items on the project's own pages", async () => {
+it("still shows the project's teams header (named for the project) and items on the project's own pages", async () => {
   const host = await sidebar("coding-team");
-  expect(host.querySelector("[data-hub-project-header]")?.textContent).toContain("Hivra");
-  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Coding team", "Leadership team"]);
+  // Dropwave: the header reads Teams; the project's name heads the sidebar's Home row and stays on the header's title.
+  expect(host.querySelector("[data-hub-project-header]")?.textContent).toContain("Teams");
+  expect(host.querySelector("[data-hub-project-header] [title]")?.getAttribute("title")).toBe("Hivra");
+  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Leadership team"]);
 });

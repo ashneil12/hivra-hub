@@ -30,6 +30,9 @@ import {
   type ReactNode,
 } from "react";
 import { Popover } from "../../../shared/ui/Popover";
+import { CommitGuardRefusal } from "../../commit-guard/ui/CommitGuardRefusal";
+import { isGuardRefusal } from "../../commit-guard/model/refusal";
+import { onGuardFindingOpen, takePendingGuardFinding } from "../../commit-guard/model/openFinding";
 import { PaneHeader } from "../../../shared/ui/PaneHeader";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { WorkingTreeDiffSurface } from "./workingTreeDiffSurface";
@@ -372,6 +375,16 @@ function ChangedFiles({
   const messageRef = useRef<HTMLTextAreaElement>(null);
   const generateAbortRef = useRef<AbortController | null>(null);
   const [message, setMessage] = useState("");
+  const [guardRefusal, setGuardRefusal] = useState<string | null>(null);
+  // WP-200: a refusal asked to be shown from a card or status line appears here, with its allow button.
+  useEffect(() => {
+    const show = () => {
+      const next = takePendingGuardFinding();
+      if (next) setGuardRefusal(next);
+    };
+    show();
+    return onGuardFindingOpen(show);
+  }, []);
   const [amendTarget, setAmendTarget] = useState<AmendTarget | null>(null);
   const amend = amendTarget !== null;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -454,7 +467,13 @@ function ChangedFiles({
   };
 
   const fail = (error: unknown) => {
-    window.alert(error instanceof Error ? error.message : String(error));
+    const text = error instanceof Error ? error.message : String(error);
+    // WP-200: a commit or push the secret check refused stays on screen, with its one allow button.
+    if (isGuardRefusal(text)) {
+      setGuardRefusal(text);
+      return;
+    }
+    window.alert(text);
   };
 
   const recordPrActivity = (number = pr?.number) => {
@@ -697,6 +716,18 @@ function ChangedFiles({
     <aside
       className={`flex min-h-0 min-w-0 flex-col ${fill ? "flex-1" : "shrink-0"}`}
     >
+      {guardRefusal ? (
+        <div className="shrink-0 border-b px-3 py-2">
+          <CommitGuardRefusal message={guardRefusal} />
+          <button
+            type="button"
+            className="mt-1 text-xs underline"
+            onClick={() => setGuardRefusal(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div className="shrink-0 border-b border-stroke p-2">
         <div className="relative">
           <textarea

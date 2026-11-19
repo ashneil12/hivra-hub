@@ -87,6 +87,44 @@ it("a watch gets the data now and again whenever it changes (only when it change
   expect(src.listeners("agents.read")).toBe(0);
 });
 
+it("a push the frame did not take is tried again, and the same snapshot is not sent twice once it lands", async () => {
+  vi.useFakeTimers();
+  let open = false;
+  const { h, src } = host({
+    post: (m) => {
+      if (!open && (m as Msg).type === "hub:data") return false;
+      sent.push(m as Msg);
+    },
+  });
+  h.receive({ type: "hub:watch", id: "w1", call: "agents.read" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(data()).toEqual([]);
+  open = true;
+  await vi.advanceTimersByTimeAsync(60);
+  expect(data()).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(data()).toHaveLength(1);
+  src.set({ agents: [{ id: "ed", state: "working" }] });
+  await vi.advanceTimersByTimeAsync(60);
+  expect(data().map((m) => (m.data as { agents: { state: string }[] }).agents[0].state)).toEqual(["idle", "working"]);
+});
+
+it("a frame that never takes a push is not retried forever", async () => {
+  vi.useFakeTimers();
+  const { h } = host({
+    post: (m) => {
+      if ((m as Msg).type === "hub:data") return false;
+      sent.push(m as Msg);
+    },
+  });
+  h.receive({ type: "hub:watch", id: "w1", call: "agents.read" });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(data()).toEqual([]);
+  const before = sent.length;
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(sent.length).toBe(before);
+});
+
 it("a watch passes its args to the read", async () => {
   const { h } = host();
   h.receive({ type: "hub:watch", id: "w1", call: "rooms.read", args: { projectId: "hivra" } });
@@ -130,9 +168,9 @@ it("a preview shows live data it asked to read, but its buttons and everything e
   h.receive({ type: "hub:call", id: "c3", call: "mono.run", args: {} });
   await flush();
   expect(replies().map((r) => r.ok)).toEqual([true, false, false]);
-  expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the page.");
+  expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the hub.");
   // mono.run is a tap now (C4): a preview's button waits until the page is kept.
-  expect(replies()[2].error).toBe("This is a preview: its buttons work once you keep the page.");
+  expect(replies()[2].error).toBe("This is a preview: its buttons work once you keep the hub.");
   expect(acted).toEqual([]);
 });
 
@@ -162,10 +200,10 @@ it("the walls stay: never Monos, never the app itself; anything unknown is refus
   h.receive({ nonsense: true });
   await flush();
   expect(replies().map((r) => r.error)).toEqual([
-    "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
-    "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
+    "Hubs can't do that: changing Monos and reaching the app directly are never allowed.",
+    "Hubs can't do that: changing Monos and reaching the app directly are never allowed.",
     "Only live data can be watched: agents.read, jobs.read, needs.read or rooms.read.",
-    "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.",
+    "Hubs can't read your keys: a hub can't reach the network, so a key would do nothing inside one.",
   ]);
 });
 
@@ -192,8 +230,7 @@ it("a read that throws tells the page why (onError) instead of leaving it blank,
   expect(sent.filter((m) => m.type === "hub:watch-error")).toEqual([{ type: "hub:watch-error", watch: "w1", error: "Couldn't read that just now: bad row" }]);
   fail = false;
   src.set({ agents: [] });
-  await new Promise((r) => setTimeout(r, 80));
-  expect(data().map((m) => m.watch)).toEqual(["w1"]);
+  await vi.waitFor(() => expect(data().map((m) => m.watch)).toEqual(["w1"]));
 });
 
 it("a page's chats are behind its agents read: refused without it, answered with it", async () => {
@@ -227,7 +264,7 @@ it("a web fetch reaches the page's own handler, and its plain refusal comes back
   expect(replies().sort((a, b) => String(a.id).localeCompare(String(b.id)))).toEqual([
     { type: "hub:reply", id: "c1", ok: false, error: "This page isn't connected to nope.example.com, so it can't read it." },
     { type: "hub:reply", id: "c2", ok: true, result: { status: 200, type: "application/json", body: "{}", url: "https://api.example.com" } },
-    { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the hub can't do this for pages yet." },
+    { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the app can't do this for hubs yet." },
   ]);
 });
 

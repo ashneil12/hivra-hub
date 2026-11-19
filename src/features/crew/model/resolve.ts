@@ -1,4 +1,5 @@
 import { cliLabel, isCli, isEffort } from "./clis";
+import { sanitizePolicy, type CrewPolicy } from "./policy";
 import { firstMatch, type CrewRule } from "./rules";
 
 export type FieldSource = "override" | "brief" | "rule" | "mono" | "project" | "system" | "default" | "none";
@@ -29,9 +30,9 @@ export type CatalogModel = {
 /** Models by CLI. Absent: a model stays a free string and an effort stays the effort list. */
 export type Catalog = Readonly<Record<string, readonly CatalogModel[]>>;
 
-/** A model or effort a source set that this CLI's catalog doesn't offer. */
+/** A CLI, Mono, model or effort a source named that was not used. */
 export type SkippedField = {
-  field: "model" | "effort";
+  field: "model" | "effort" | "cli" | "mono";
   from: FieldSource;
   value: string;
   reason: string;
@@ -59,8 +60,13 @@ export type Route = {
   effortFrom: FieldSource;
   /** Index into the merged rule list, when a rule matched. */
   ruleIndex: number | null;
+  /** WP-141: the matched rule's first label, so a pick can say which role or rule chose it. */
+  ruleLabel?: string;
   /** Models and efforts a source set that were skipped, in the order they were tried. */
   skipped: SkippedField[];
+  /** WP-141: the Never use list and the lock this route was chosen under (crew_route answers the same). */
+  never: string[];
+  lock: boolean;
 };
 
 export type Role = "plan" | "verdict" | "work";
@@ -117,13 +123,45 @@ function sources(override: Pick | undefined, brief: Pick | undefined, rule: Crew
   ];
 }
 
-function pickCli(rows: readonly Source[], present: readonly Presence[]): { value: string | undefined; from: FieldSource } {
+function neverReason(cli: string): string {
+  return `${cliLabel(cli)} is on Never use, so it was skipped.`;
+}
+
+/** Installed and signed in. Claude Code is first when it is one of them, otherwise the given order. */
+function signedInOrder(present: readonly Presence[]): Presence[] {
+  const usable = present.filter((row) => row.installed && row.signedIn && isCli(row.cli));
+  const claude = usable.find((row) => row.cli === "claude");
+  if (!claude) return usable;
+  return [claude, ...usable.filter((row) => row.cli !== "claude")];
+}
+
+function isBanned(neverUse: readonly string[], cli: string): boolean {
+  return neverUse.includes(cli);
+}
+
+function pickCli(
+  rows: readonly Source[],
+  present: readonly Presence[],
+  neverUse: readonly string[],
+  skipped: SkippedField[],
+): { value: string | undefined; from: FieldSource } {
   for (const row of rows) {
     const value = field(rawOf(row.pick, "cli"), "cli");
-    if (value) return { value, from: row.from };
+    if (!value) continue;
+    if (isBanned(neverUse, value)) {
+      skipped.push({ field: "cli", from: row.from, value, reason: neverReason(value) });
+      continue;
+    }
+    return { value, from: row.from };
   }
-  const fallback = defaultCli(present);
-  return { value: fallback ?? undefined, from: fallback ? "default" : "none" };
+  for (const row of signedInOrder(present)) {
+    if (isBanned(neverUse, row.cli)) {
+      skipped.push({ field: "cli", from: "default", value: row.cli, reason: neverReason(row.cli) });
+      continue;
+    }
+    return { value: row.cli, from: "default" };
+  }
+  return { value: undefined, from: "none" };
 }
 
 function pickModel(
@@ -174,9 +212,7 @@ function pickEffort(
 
 /** Claude Code when it is installed and signed in, otherwise the first signed-in CLI in the given order. */
 export function defaultCli(present: readonly Presence[]): string | null {
-  const usable = present.filter((row) => row.installed && row.signedIn && isCli(row.cli));
-  if (usable.some((row) => row.cli === "claude")) return "claude";
-  return usable[0]?.cli ?? null;
+  return signedInOrder(present)[0]?.cli ?? null;
 }
 
 export function defaultLine(present: readonly Presence[]): string {
@@ -190,21 +226,42 @@ export function defaultLine(present: readonly Presence[]): string {
  * for the chosen CLI is skipped, with the reason, and the next source is tried.
  * With no catalog, a model stays a free string and an unknown effort is skipped
  * quietly, as before. Omit `options` and nothing below a rule changes.
+ * A CLI on Never use is skipped, with the reason, and so are that source's model
+ * and effort. Always use my default drops a per-task override. The brief still wins,
+ * and a role label is an ordinary rule.
  */
 export function resolveRoute(
   task: RouteTask,
   rules: readonly CrewRule[],
   present: readonly Presence[],
-  options?: { defaults?: RouteDefaults; catalog?: Catalog },
+  options?: { defaults?: RouteDefaults; catalog?: Catalog; policy?: CrewPolicy },
 ): Route {
+  const policy = options?.policy ? sanitizePolicy(options.policy) : undefined;
+  const neverUse = policy?.neverUse ?? [];
   const ruleIndex = firstMatch(rules, task.labels, task.paths);
   const rule = ruleIndex == null ? undefined : rules[ruleIndex];
-  const rows = sources(task.override, task.brief, rule, options?.defaults);
   const skipped: SkippedField[] = [];
-  const cli = pickCli(rows, present);
-  const model = pickModel(rows, options?.defaults?.usual, cli.value, options?.catalog, skipped);
+  let override = task.override;
+  const overrideCli = field(override?.cli, "cli");
+  const hasOverride = Boolean(overrideCli || field(override?.model, "model") || field(override?.effort, "effort"));
+  if (policy?.lockDefault && hasOverride) {
+    skipped.push({
+      field: "cli",
+      from: "override",
+      value: overrideCli ?? "",
+      reason: "Always use my default is on, so this override was not applied.",
+    });
+    override = undefined;
+  }
+  const rows = sources(override, task.brief, rule, options?.defaults);
+  const open = rows.filter((row) => {
+    const cli = field(rawOf(row.pick, "cli"), "cli");
+    return !cli || !isBanned(neverUse, cli);
+  });
+  const cli = pickCli(rows, present, neverUse, skipped);
+  const model = pickModel(open, options?.defaults?.usual, cli.value, options?.catalog, skipped);
   const chosen = cli.value && options?.catalog ? options.catalog[cli.value]?.find((row) => row.id === model.value) : undefined;
-  const effort = pickEffort(rows, options?.defaults?.usual, chosen, options?.catalog, skipped);
+  const effort = pickEffort(open, options?.defaults?.usual, chosen, options?.catalog, skipped);
   return {
     cli: cli.value ?? null,
     model: model.value ?? null,
@@ -213,7 +270,10 @@ export function resolveRoute(
     modelFrom: model.value ? model.from : "none",
     effortFrom: effort.value ? effort.from : "none",
     ruleIndex,
+    ...(rule?.labels[0] ? { ruleLabel: rule.labels[0] } : {}),
     skipped,
+    never: neverUse,
+    lock: policy?.lockDefault === true,
   };
 }
 

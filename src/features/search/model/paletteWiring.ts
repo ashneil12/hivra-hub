@@ -44,17 +44,23 @@ export type PaletteActions = {
 export type PaletteSideEffects = {
   /** The 80 ms debounce the key handler uses, so a double press runs once. */
   run: (name: string, fn: () => void) => void;
-  /** The chat in focus, worked out by App from its own refs. */
-  archiveChat: () => string | null;
+  /** The chat Esc would stop, worked out by App the way its Esc handler does. */
   stopChat: () => string | null;
-  archive: (sessionId: string) => void;
   stop: (sessionId: string) => void;
+  /** The very handler the archive shortcut runs, so it refuses where the shortcut refuses. */
+  archiveFocused: () => void;
   showHome: () => void;
   showChanges: () => void;
   openModelPicker: () => void;
   newWindow: () => void;
   zoom: (action: ZoomAction) => void;
   editor: (action: "find" | "replace") => void;
+  /** WP-123: fork the chat in focus from its latest message. */
+  forkChat: () => void;
+  /** WP-252: open a new chat that helps the person find out what went wrong. */
+  reportProblem: () => void;
+  /** WP-255: the chat in focus's own say on computer use; "allow" hands it back to Settings. */
+  computerUseChat: (mode: "allow" | "observe-only" | "deny") => void;
 };
 
 function tabHandlers(
@@ -124,10 +130,7 @@ function appHandlers(
     inbox: () => actions.onOpenInbox(),
     home: () => side.showHome(),
     changes: () => side.showChanges(),
-    "archive-chat": () => {
-      const id = side.archiveChat();
-      if (id) side.archive(id);
-    },
+    "archive-chat": () => side.archiveFocused(),
     "stop-chat": () => {
       const id = side.stopChat();
       if (id) side.stop(id);
@@ -135,6 +138,12 @@ function appHandlers(
     // WP-110: flip the next-chat worktree between off and ask. Not a composer action.
     "next-chat-worktree": () =>
       saveNewChatWorktree(flippedNewChatWorktree(loadNewChatWorktree())),
+    // WP-123: fork the chat in focus. The palette has no message, so the latest one is used.
+    "fork-from-here": () => side.forkChat(),
+    "report-problem": () => side.reportProblem(),
+    "computer-use-observe": () => side.computerUseChat("observe-only"),
+    "computer-use-off": () => side.computerUseChat("deny"),
+    "computer-use-follow": () => side.computerUseChat("allow"),
   };
 }
 

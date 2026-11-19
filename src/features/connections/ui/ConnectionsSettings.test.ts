@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { requestAddMachine } from "../../hivraCloud/model/addMachine";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import {
   REMOTE_PROVIDERS,
@@ -84,6 +85,24 @@ async function poll() {
     await vi.advanceTimersByTimeAsync(400);
   });
 }
+
+it("opens Add machine with a Hivra Cloud address and does not connect by itself", async () => {
+  await render();
+  await act(async () => {
+    requestAddMachine({ target: "me@cloud", name: "Desk" });
+  });
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[placeholder="user@my-mac-mini or an SSH alias"]',
+    )?.value,
+  ).toBe("me@cloud");
+  expect(
+    container.querySelector<HTMLInputElement>(
+      'input[placeholder="Optional, e.g. Home Mac mini"]',
+    )?.value,
+  ).toBe("Desk");
+  expect(invoke).not.toHaveBeenCalledWith("remote_ssh_begin", expect.anything());
+});
 
 it("starts SSH setup from Settings and makes the machine available after native pairing", async () => {
   await start();

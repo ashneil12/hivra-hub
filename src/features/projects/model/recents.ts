@@ -20,6 +20,8 @@ export type ArchivedProject = {
 };
 
 export function normalizeProjectPath(path: string): string {
+  // A chat with no folder (docs/PORTABLE.md) stays blank: tidying it into `/` would make it the filesystem root.
+  if (!path.trim()) return "";
   return slash(path).replace(/\/+$/, "") || "/";
 }
 
@@ -64,7 +66,7 @@ function save(next: RecentProject[]) {
 
 export function rememberProject(path: string): RecentProject[] {
   const normalized = normalize(path);
-  if (normalized === "~") return loadRecents();
+  if (!normalized || normalized === "~") return loadRecents();
   dropArchived(normalized);
   const prev = loadRecents().filter((p) => !sameProjectPath(p.path, normalized));
   const next = [{ path: normalized, openedAt: Date.now() }, ...prev].slice(

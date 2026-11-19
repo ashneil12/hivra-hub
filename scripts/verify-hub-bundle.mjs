@@ -21,6 +21,26 @@
 // command line: it always runs, however it is reached. The readers are in scripts/hub-bundle.mjs.
 
 import { readStamp, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { realpathSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { dictationHelperProblems, helperBundleId, readBundleFacts } from "./hub-dictation-helper.mjs";
+
+/** A stand-in codesign for fixture bundles. It is used only when it and the bundle are both in the temp folder, so a
+ * real bundle is always read with /usr/bin/codesign. */
+function codesignFor(appPath) {
+  const fake = process.env.MONOCODE_TEST_CODESIGN;
+  if (!fake) return {};
+  const temp = realpathSync(os.tmpdir());
+  const inTemp = (file) => {
+    try {
+      return realpathSync(path.resolve(file)).startsWith(temp + path.sep);
+    } catch {
+      return false;
+    }
+  };
+  return inTemp(fake) && inTemp(appPath) ? { codesign: fake } : {};
+}
 
 const args = process.argv.slice(2);
 const stampOnly = args[0] === "--stamp";
@@ -45,4 +65,17 @@ if (!result.ok) {
   for (const error of result.errors) console.error(`  ${error}`);
   process.exit(1);
 }
+// WP-131b: the microphone belongs to the dictation helper inside the bundle, never to the Hub itself.
+const bundleFacts = readBundleFacts(app, codesignFor(app));
+const helperProblems = dictationHelperProblems({ identifier: result.identifier, ...bundleFacts });
+if (helperProblems.length) {
+  console.error(`REFUSE: ${app} (dictation helper)`);
+  for (const problem of helperProblems) console.error(`  ${problem}`);
+  process.exit(1);
+}
 console.log(`OK: ${app} is the Hub (${result.identifier}), ${stampLabel(result.stamp)}, built ${result.stamp.builtAt}.`);
+console.log(
+  bundleFacts.helper
+    ? `OK: dictation helper ${helperBundleId(result.identifier)} is in the bundle, signed with its own entitlements.`
+    : "OK: no dictation helper in the bundle (the kill switch is off), and the app asks for no microphone.",
+);

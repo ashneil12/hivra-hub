@@ -1,0 +1,16 @@
+# WP-173. The default profile is not set here, so a local `cargo nextest run`
+# does not retry and does not write JUnit. These values apply only to `--profile ci`.
+
+[profile.ci]
+# One extra run. A test that fails both times still fails the job.
+retries = 1
+# A test that fails and then passes is flaky. It does not fail the job.
+flaky-result = "pass"
+# One failure must not hide the rest of the suite.
+fail-fast = false
+# Mark a test slow after 60 seconds, and kill it after three of those periods (about 3 minutes).
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[profile.ci.junit]
+# Workspace-relative path. The job summary and the uploaded artifact both read this file.
+path = "target/nextest/ci/junit.xml"

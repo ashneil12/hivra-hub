@@ -2,7 +2,7 @@
 // every chat a chat started (delegate_task, sessions.start) nested under the chat Ash talks to, like Claude Code's
 // grouped sessions but folded away until one is stuck (monos/ui/SubChatList.tsx). Ash never talks to workers, so a
 // worker's own workers join the same top-level chat.
-import type { Delegation } from "../../monos/model/delegations";
+import { isOwed, type Delegation } from "../../monos/model/delegations";
 import type { ChildChat } from "../../monos/model/delegationView";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import { listTitle } from "../../../shared/text/plainTitle";
@@ -31,6 +31,9 @@ function callerOf(id: string, known: ReadonlySet<string>): string | undefined {
  * sub-chat joins the top-level chat above it. A top-level chat is never someone's sub-chat here, even when it is one
  * (a Lead's chat a leadership brief went into).
  */
+/** How long a finished, reported sub-chat stays in its chat's list before it counts as resolved. */
+export const RESOLVED_SHOWN_MS = 24 * 60 * 60 * 1000;
+
 export function subChatsByParent(
   parents: readonly string[],
   listed: readonly ListedChat[],
@@ -61,8 +64,15 @@ export function subChatsByParent(
     if (list) list.push(chat);
     else byParent.set(parent, [chat]);
   };
+  const resolvedBefore = Date.now() - RESOLVED_SHOWN_MS;
   for (const row of newest.values()) {
     if (top.has(row.childSession)) continue;
+    // Ash 12 Nov: sub-chats piled up forever. One finished, reported and a day old is resolved: it leaves the list
+    // (its line is in its Mono's memory, finishedWork.ts, and the chat itself stays, by id).
+    if (!isOwed(row) && (row.settledAt ?? row.updatedAt) < resolvedBefore) {
+      childIds.add(row.childSession);
+      continue;
+    }
     const parent = rootOf(row.childSession);
     if (!parent) continue;
     add(parent, {

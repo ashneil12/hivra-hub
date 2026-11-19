@@ -77,6 +77,8 @@ export function addStarterMono(templateId: string, projects: readonly string[] =
     name: offer.name,
     ...(offer.role ? { role: offer.role } : {}),
     instructions: offer.soul,
+    templateId: offer.id,
+    ...(offer.id === "coordinator" ? { captain: true } : {}),
     ...(offer.everyProject ? { everyProject: true } : {}),
   }));
   return findMono(created.id);

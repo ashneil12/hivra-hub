@@ -1,5 +1,8 @@
 import { homeDir } from "../../../../platform/tauri/fs";
-import { setHarnessModels } from "../../../../features/sessions/model/models";
+import {
+  setHarnessModels,
+  type AgentModel,
+} from "../../../../features/sessions/model/models";
 import { AcpClient } from "../../core/acp";
 import {
   execChild,
@@ -31,9 +34,11 @@ let inflight: Promise<void> | null = null;
 
 export function refreshGrokCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverGrokModels()
-    .then((models) => {
-      if (models.length > 0) setHarnessModels("grok", models);
+  inflight = discoverGrokCatalog()
+    .then(({ models, listed }) => {
+      // The built-in list fills the picker when Grok will not list its models,
+      // but it is not recorded as live.
+      if (models.length > 0) setHarnessModels("grok", models, { live: listed });
     })
     .catch((error: unknown) => {
       console.debug("[monocode] grok catalog", error);
@@ -45,17 +50,24 @@ export function refreshGrokCatalog(): Promise<void> {
 }
 
 export async function discoverGrokModels(workingDirectory?: string) {
+  return (await discoverGrokCatalog(workingDirectory)).models;
+}
+
+/** `listed` is true only when Grok itself gave the models, not the built-in list. */
+async function discoverGrokCatalog(
+  workingDirectory?: string,
+): Promise<{ models: AgentModel[]; listed: boolean }> {
   const fromAcp = await discoverViaAcp(workingDirectory).catch((error: unknown) => {
     console.debug("[monocode] grok ACP catalog failed", error);
     return [];
   });
-  if (fromAcp.length > 0) return fromAcp;
+  if (fromAcp.length > 0) return { models: fromAcp, listed: true };
   const fromCli = await discoverViaCli(workingDirectory).catch((error: unknown) => {
     console.debug("[monocode] grok CLI catalog failed", error);
     return [];
   });
-  if (fromCli.length > 0) return fromCli;
-  return fallbackGrokModels();
+  if (fromCli.length > 0) return { models: fromCli, listed: true };
+  return { models: fallbackGrokModels(), listed: false };
 }
 
 async function discoverViaAcp(workingDirectory?: string) {

@@ -3,16 +3,16 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
 import { handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import type { RedCategory } from "./redList";
-import { ashSaidIt, handleAutopilotApp, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
+import { ashSaidIt, defaultAutopilotDeps, handleAutopilotApp, standingFromCache, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
 import { memoryAutopilot, type MemoryAutopilot } from "./memoryAutopilot";
 
 const NOW = new Date(2026, 9, 17, 15, 0).getTime();
 const MONDAY_9 = new Date(2026, 9, 19, 9, 0).getTime();
 
 const PROJECTS = [
-  { id: "vg-game", name: "EXO", folder: "/Users/ash/Projects/vg-game" },
-  { id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" },
-  { id: "hub", name: "MonoCode Hub", folder: "/Users/ash/Projects/monocode-hub" },
+  { id: "vg-game", name: "EXO", folder: "/Users/someone/Projects/vg-game" },
+  { id: "hivra", name: "Hivra", folder: "/Users/someone/Projects/hivra" },
+  { id: "hub", name: "MonoCode Hub", folder: "/Users/someone/Projects/monocode-hub" },
 ];
 
 type Setup = { backend: MemoryAutopilot; deps: AutopilotAppDeps; holds: Map<string, RedCategory> };
@@ -37,8 +37,8 @@ function setup(): Setup {
 
 const MONOS: Record<string, { id: string; projects: string[] }> = {
   "cos-chat": { id: "ada", projects: PROJECTS.map((p) => p.folder) },
-  "hivra-chat": { id: "hivra-lead", projects: ["/Users/ash/Projects/hivra"] },
-  "mkt-chat": { id: "marketing", projects: ["/Users/ash/Projects/hub", "/Users/ash/Projects/monocode-hub"] },
+  "hivra-chat": { id: "hivra-lead", projects: ["/Users/someone/Projects/hivra"] },
+  "mkt-chat": { id: "marketing", projects: ["/Users/someone/Projects/hub", "/Users/someone/Projects/monocode-hub"] },
 };
 
 const host: AutopilotAppHost = {
@@ -51,7 +51,7 @@ function said(text: string, extra: Partial<Block> = {}): Block {
   return { id: crypto.randomUUID(), role: "user", text, ...extra };
 }
 
-function chat(id: string, blocks: Block[] = [], cwd = "/Users/ash"): Session {
+function chat(id: string, blocks: Block[] = [], cwd = "/Users/someone"): Session {
   return { ...newSession("claude", cwd), id, title: id, blocks };
 }
 
@@ -87,7 +87,7 @@ describe("switching autopilot from a chat", () => {
     const words = [said("go autopilot until Monday 9:00")];
     for (const id of ["worker-1", "habit-run"]) {
       await expect(
-        call(chat(id, words, "/Users/ash/Projects/hivra"), "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s),
+        call(chat(id, words, "/Users/someone/Projects/hivra"), "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s),
       ).rejects.toThrow("Workers and habit runs can't");
       await expect(call(chat(id, words), "autopilot.off", {}, s)).rejects.toThrow("Workers and habit runs can't");
     }
@@ -168,15 +168,32 @@ describe("autopilot.decide", () => {
     expect(s.backend.entries.filter((e) => e.kind === "decision")).toEqual([]);
   });
 
-  it("takes the recommendation and logs what, who, the pick, when and which chat, once per request", async () => {
+  it("holds a decide while the captain is waiting, and does not take the chat's own recommendation", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const result = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs" },
+      s,
+      "wait-1",
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({ decision: "held", act: "ask", red: null });
+    expect(result.answer).toBeUndefined();
+    expect(String(result.reason)).toMatch(/engine is down/);
+    expect(s.backend.entries.find((e) => e.kind === "decision")).toMatchObject({ outcome: "held" });
+  });
+
+  it("logs a held decide once per request, with what, who, when and which chat, and does not take the pick", async () => {
     const s = setup();
     await on(s, ["*"]);
     const lead = chat("hivra-chat");
     const result = await call(lead, "autopilot.decide", { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs", why: "smaller reviews" }, s, "req-1");
-    expect(result).toMatchObject({ autopilot: "on", decision: "taken", act: "proceed", answer: "Yes, two PRs", untilLabel: "Mon 9:00" });
+    expect(result).toMatchObject({ autopilot: "on", decision: "held", act: "ask", untilLabel: "Mon 9:00" });
+    expect((result as { answer?: string }).answer).toBeUndefined();
     const entry = s.backend.entries.find((e) => e.kind === "decision")!;
     expect(entry).toMatchObject({
-      outcome: "taken",
+      outcome: "held",
       what: "Split the fix into two PRs?",
       recommendation: "Yes, two PRs",
       who: "Hivra lead",
@@ -201,16 +218,249 @@ describe("autopilot.decide", () => {
     expect(marked).toMatchObject({ decision: "held", red: "send-as-ash" });
   });
 
+  it("never takes a call that sends, deletes, pays, publishes or changes access, and names no red category for it", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    for (const [question, recommendation] of [
+      ["Should I email Priya the invoice?", "Yes"],
+      ["Should I publish the release notes?", "Yes"],
+      ["Delete the old branch?", "Yes"],
+      ["Should I post the changelog to the public site?", "Yes"],
+    ] as const) {
+      const result = (await call(chat("hivra-chat"), "autopilot.decide", { question, recommendation }, s, `r-${question}`)) as Record<string, unknown>;
+      expect(result, question).toMatchObject({ decision: "held", act: "ask", red: null });
+      expect(result.redLabel, question).toBeUndefined();
+      expect(String(result.note)).toContain("sends, deletes, moves money, publishes or changes access");
+    }
+    expect(s.backend.entries.filter((e) => e.kind === "decision").every((e) => e.outcome === "held" && e.red === null)).toBe(true);
+    // It names no red category, so it doesn't hold the chat's next question.
+    expect(s.holds.has("hivra-chat")).toBe(false);
+  });
+
   it("covers a project only through its own switch or the one for everything", async () => {
     const s = setup();
     await on(s, ["vg-game"]);
-    const worker = chat("worker-1", [], "/Users/ash/Projects/hivra");
+    const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
     expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes" }, s)).toMatchObject({ autopilot: "off" });
-    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ decision: "taken" });
+    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ autopilot: "on", decision: "held" });
     // A leadership chat spans projects: only the switch for everything covers it.
     expect(await call(chat("cos-chat"), "autopilot.decide", { question: "Plan?", recommendation: "A" }, s)).toMatchObject({ autopilot: "off" });
     await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", project: "nope" }, s)).rejects.toThrow("Unknown project");
     await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", red: "maybe" }, s)).rejects.toThrow("red must be one of");
+  });
+
+  it("a standing answer beats a confident pick, and a person-only key or money past the limit is held", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = ({ key }) => {
+      if (key === "secret/token") return {};
+      if (key === "spend") return { moneyOverLimit: true, standing: { answer: "Example: keep it", label: "merge on green" } };
+      return {
+        rules: [{ when: "named rule", answer: "Example: change it" }],
+        standing: { answer: "Example: keep it", label: "merge on green" },
+      };
+    };
+    const stood = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: keep the gate?",
+        recommendation: "Example: change it",
+        why: "smaller reviews",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "stood",
+    );
+    expect(stood).toMatchObject({
+      decision: "taken",
+      act: "proceed",
+      answer: "Example: keep it",
+      answeredBy: "captain:chief",
+      answerReason: "standing answer: merge on green",
+    });
+    const ruled = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: the named rule applies?",
+        recommendation: "Example: keep it",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "ruled",
+    );
+    expect(ruled).toMatchObject({ decision: "taken", answer: "Example: change it", answerReason: "rule: named rule" });
+    const owner = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Example: which name?", recommendation: "Example: keep it", key: "secret/token" },
+      s,
+      "owner",
+    )) as Record<string, unknown>;
+    expect(owner).toMatchObject({ decision: "held", act: "ask", red: null });
+    expect(owner.answeredBy).toBeUndefined();
+    expect(s.holds.has("hivra-chat")).toBe(false);
+    const money = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Example: keep the gate?", recommendation: "Example: keep it", key: "spend" },
+      s,
+      "money",
+    )) as Record<string, unknown>;
+    expect(money).toMatchObject({ decision: "held", act: "ask" });
+    expect(money.answeredBy).toBeUndefined();
+    expect(String(money.reason)).toContain("limit");
+  });
+
+  it("a blank captain id is not the asking Mono", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = () => ({ monoId: "   ", standing: { answer: "Example: keep it", label: "merge on green" } });
+    const taken = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: keep the gate?",
+        recommendation: "Example: change it",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "blank-chief",
+    );
+    expect(taken).toMatchObject({ decision: "taken", answeredBy: "captain:chief" });
+    expect((taken as { answeredBy?: string }).answeredBy).not.toBe("captain:hivra-lead");
+  });
+
+  it("does not answer a keyed call from another project's rule or standing answer", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const seen: unknown[] = [];
+    s.deps.captainContext = (input) => {
+      seen.push(input.key);
+      return {
+        rules: [{ when: "font", answer: "Example: Inter" }],
+        standing: { answer: "Example: Inter", label: "EXO menus" },
+      };
+    };
+    const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
+    const result = (await call(
+      worker,
+      "autopilot.decide",
+      {
+        question: "Which font?",
+        recommendation: "Example: Comic Sans",
+        project: "EXO",
+        key: "font/menu",
+        options: ["Example: Inter", "Example: Comic Sans"],
+      },
+      s,
+      "outsider",
+    )) as Record<string, unknown>;
+    expect(result.decision).toBe("held");
+    expect(result.answeredBy).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("Example: Inter");
+    expect(JSON.stringify(result)).not.toContain("EXO menus");
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("passes the card version it read, and does not write when that version is missing", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const written: unknown[][] = [];
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    s.deps.answerDecision = async (...args) => {
+      written.push(args);
+      return { applied: true };
+    };
+    const card = {
+      question: "Which font?",
+      options: ["Keep it", "Change it"],
+      recommended: "Keep it",
+      askedBy: "fm",
+      state: "open" as const,
+      version: 4,
+    };
+    s.deps.openCard = async () => card;
+    const taken = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "ver",
+    );
+    expect(taken).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(1);
+    expect(written[0]?.[0]).toBe("hivra");
+    expect(written[0]?.[1]).toBe("font");
+    expect(written[0]?.[2]).toBe("Keep it");
+    expect(written[0]?.[4]).toBe(4);
+    expect(written[0]?.[6]).toBe("hivra-chat");
+
+    s.deps.openCard = async () => ({ ...card, version: undefined });
+    const missing = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "miss",
+    )) as Record<string, unknown>;
+    expect(missing.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    s.deps.openCard = async () => ({ ...card, version: Number.NaN });
+    const notANumber = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "nan",
+    )) as Record<string, unknown>;
+    expect(notANumber.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    delete s.deps.openCard;
+    const unversioned = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "none",
+    );
+    expect(unversioned).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(2);
+    expect(written[1]?.[4]).toBeUndefined();
+  });
+
+  it("says a held captain answer is held, not that it waits", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    const other = (await call(
+      chat("worker-1", [], "/Users/someone/Projects/hivra"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "EXO", key: "font", options: ["Keep it"] },
+      s,
+      "other-project",
+    )) as Record<string, unknown>;
+    expect(other.decision).toBe("held");
+    expect(other.note).toBe("This call names another project's question, so it is held.");
+
+    const unwritten = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "Hivra", key: "font", options: ["Keep it"] },
+      s,
+      "unwritten",
+    )) as Record<string, unknown>;
+    expect(unwritten.decision).toBe("held");
+    expect(unwritten.note).toBe("The decision store did not keep the captain's answer, so it is held.");
   });
 
   it("status says what is on, for whom", async () => {
@@ -218,6 +468,16 @@ describe("autopilot.decide", () => {
     await on(s, ["hivra"]);
     expect(await call(chat("hivra-chat"), "autopilot.status", {}, s)).toMatchObject({ on: true, for: "Hivra", untilLabel: "Mon 9:00" });
     expect(await call(chat("cos-chat"), "autopilot.status", {}, s)).toMatchObject({ on: false });
+  });
+});
+
+describe("a standing answer kept after a failed fetch", () => {
+  const row = { answer: "Example: keep it", label: "merge on green" };
+  it("is used while it is fresh, and dropped once it is older than a minute", () => {
+    expect(standingFromCache(undefined, 1_000)).toBeNull();
+    expect(standingFromCache({ at: Number.NaN, row }, 1_000)).toBeNull();
+    expect(standingFromCache({ at: 1_000, row }, 1_000 + 59_999)).toEqual(row);
+    expect(standingFromCache({ at: 1_000, row }, 1_000 + 60_000)).toBeNull();
   });
 });
 
@@ -229,5 +489,14 @@ describe("the app control", () => {
     );
     // Outside the desktop app there is no store.
     await expect(handleAgentApp(chat("w"), "r", "autopilot.status", {}, appHost)).rejects.toThrow("Autopilot needs the desktop app.");
+  });
+});
+
+describe("the captain in the app's own autopilot (review of PR #244)", () => {
+  it("the deps the app runs with give the captain its context, so money past the limit can pass up", () => {
+    // handleAgentApp calls handleAutopilotApp with defaultAutopilotDeps(). Without captainContext, captainDecide never
+    // sees moneyOverLimit, a rule, a standing answer or a turn count, and step 5 takes every recommendation.
+    const deps = defaultAutopilotDeps();
+    expect(deps.captainContext).toBeTypeOf("function");
   });
 });

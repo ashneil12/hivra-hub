@@ -11,6 +11,7 @@ import {
   extractToolPreview,
 } from "../../core/preview";
 import { acpAgentInfo } from "../../core/acpSubagents";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 
 export type AntigravityModeId = "default" | "auto_edit" | "yolo";
 
@@ -49,11 +50,9 @@ export function antigravityModeId(
   runtimeMode: RuntimeMode,
   planning = false,
 ): AntigravityModeId {
-  // No native plan mode. Use default and deny non-read permissions on the client.
-  if (planning) return "default";
-  if (runtimeMode === "full-access") return "yolo";
-  if (runtimeMode === "auto-accept-edits") return "auto_edit";
-  return "default";
+  // Read from the permission table (core/permissionMatrix.ts). Antigravity has no native plan mode:
+  // the plan row runs as default and denies non-read permissions on the client.
+  return cliPermissionSetting("antigravity", planning ? "plan" : runtimeMode) as AntigravityModeId;
 }
 
 export function autoPermissionOption(

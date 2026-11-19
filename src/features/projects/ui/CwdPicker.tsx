@@ -85,7 +85,8 @@ export function CwdPicker({
   onCloseRef.current = onClose;
 
   const inProject = looksLikeProject(cwd);
-  const label = prettyCwd(cwd);
+  // A chat with no folder (docs/PORTABLE.md) says so here, and the recents below are how it gets one.
+  const label = cwd.trim() ? prettyCwd(cwd) : "Choose a project";
   // Read the saved rail order on opening, including changes made while Notes is open.
   const projects =
     mode === "move" ? projectRailItems(recents, activeCwd ?? "") : recents;

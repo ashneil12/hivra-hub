@@ -34,6 +34,13 @@ describe("askChief", () => {
     expect(askChief("What did we decide about fonts?", { readings, projects, loaded: true })).toMatchObject({ kind: "lines", lines: [] });
   });
 
+  it("says there are no projects instead of asking which one, when there are none", () => {
+    expect(askChief("Write the notes", { readings: [], projects: [], loaded: true })).toEqual({
+      kind: "question",
+      text: "There are no projects yet. Add one first, then tell it what to do.",
+    });
+  });
+
   it("does not answer as if nothing is going on when the read has not landed", () => {
     expect(askChief("What's going on?", { readings: [], projects, loaded: false })).toEqual({
       kind: "question",

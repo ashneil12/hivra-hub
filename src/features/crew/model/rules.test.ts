@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { draftRule, firstMatch, mergeRules, moveRule, pathMatches, ruleMatches, sanitizeRule, type CrewRule } from "./rules";
+import {
+  draftRule,
+  firstMatch,
+  mergeRules,
+  moveRule,
+  pathMatches,
+  ruleMatches,
+  sanitizeRule,
+  taskCeilingFromRules,
+  type CrewRule,
+} from "./rules";
 
 function rule(partial: Partial<CrewRule> & Pick<CrewRule, "labels" | "paths">): CrewRule {
   return { source: "person", ...partial };
@@ -70,6 +80,53 @@ describe("rule matching", () => {
       cli: "cursor",
       effort: "low",
     });
+  });
+
+  it("keeps a task ceiling only beside a real pick, and the lowest one wins", () => {
+    const kept = draftRule({ labels: "ui", paths: "", cli: "cursor", model: "", effort: "", ceiling: "10" });
+    expect(kept).toMatchObject({ cli: "cursor", taskCeilingUsd: 10 });
+    expect(draftRule({ labels: "ui", paths: "", cli: "cursor", model: "", effort: "", ceiling: "12.40" })).toMatchObject({
+      taskCeilingUsd: 12.4,
+    });
+    expect(draftRule({ labels: "ui", paths: "", cli: "cursor", model: "", effort: "", ceiling: "  " })).toMatchObject({
+      cli: "cursor",
+    });
+    expect(
+      draftRule({ labels: "ui", paths: "", cli: "cursor", model: "", effort: "", ceiling: "  " }),
+    ).not.toHaveProperty("taskCeilingUsd");
+
+    expect(draftRule({ labels: "ui", paths: "", cli: "", model: "", effort: "", ceiling: "10" })).toBe(
+      "Pick a CLI, a model or an effort.",
+    );
+    expect(sanitizeRule({ labels: ["ui"], paths: [], taskCeilingUsd: 10 }, "person")).toBeNull();
+
+    for (const ceiling of ["0", "-1", "nope", "1e2", "1000000001", "NaN"]) {
+      expect(draftRule({ labels: "ui", paths: "", cli: "cursor", model: "", effort: "", ceiling })).toBe(
+        "The task ceiling has to be a positive amount.",
+      );
+    }
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: 0 }, "person")).toBeNull();
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: -1 }, "person")).toBeNull();
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: Number.POSITIVE_INFINITY }, "person")).toBeNull();
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: "10" }, "person")).toBeNull();
+
+    const stored = sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: 10 }, "person");
+    expect(stored).toMatchObject({ cli: "cursor", taskCeilingUsd: 10, source: "person" });
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: 10 }, "plugin")).toMatchObject({
+      cli: "cursor",
+      source: "plugin",
+    });
+    expect(sanitizeRule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: 10 }, "plugin")).not.toHaveProperty(
+      "taskCeilingUsd",
+    );
+
+    const low = rule({ labels: ["docs"], paths: [], cli: "codex", taskCeilingUsd: 4 });
+    const high = rule({ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: 10 });
+    const plain = rule({ labels: ["api"], paths: [], cli: "claude" });
+    const plugin = rule({ labels: ["ui"], paths: [], cli: "pi", source: "plugin", taskCeilingUsd: 1 });
+    expect(taskCeilingFromRules([high, low, plain, plugin])).toBe(4);
+    expect(taskCeilingFromRules([plain, plugin])).toBeNull();
+    expect(taskCeilingFromRules([])).toBeNull();
   });
 });
 

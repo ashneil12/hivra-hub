@@ -39,6 +39,20 @@ describe("crew tab", () => {
     vi.unstubAllGlobals();
   });
 
+  it("WP-141: shows why the crew picked a worker, beside its notice", () => {
+    const rows = crewRows({
+      project: PROJECT,
+      now: NOW,
+      rows: [
+        { ...worker("a", "working"), log: [{ event: "recorded", at: 1, why: "Builder role prefers Codex." }] },
+        worker("b", "working"),
+      ],
+    });
+    act(() => root.render(createElement(CrewTab, { rows, onStop: vi.fn() })));
+    expect(container.querySelector("[data-crew-row='a'] [data-crew-why]")?.textContent).toBe("Builder role prefers Codex.");
+    expect(container.querySelector("[data-crew-row='b'] [data-crew-why]")).toBeNull();
+  });
+
   it("shows the five words and nothing else, and asks before it stops", () => {
     const rows = crewRows({
       project: PROJECT,
@@ -209,12 +223,35 @@ describe("inbox and digest on screen", () => {
           question: "Oldest question",
           state: "open",
           waiting: [],
-          updatedAt: NOW - 12 * 60_000,
+          createdAt: NOW - 12 * 60_000,
+          // Touched a second ago: the phrase still counts from when it was asked.
+          updatedAt: NOW - 1_000,
         },
       ],
     });
     act(() => root.render(createElement(FirstMateInbox, { items, now: NOW })));
     expect(container.querySelector("[data-inbox-kind='decision'] [data-waiting]")?.textContent).toBe("waiting 12 minutes");
+  });
+
+  it("says how long a blocked row has been stuck, not how long its work has run", () => {
+    const items = inboxItems({
+      project: PROJECT,
+      rows: [
+        {
+          id: "stuck",
+          project: PROJECT,
+          title: "Cannot finish",
+          status: "needs-you",
+          statusNotice: "Cannot finish: the deploy key is missing",
+          stallKind: "blocked",
+          stalledAt: NOW - 4 * 60_000,
+          createdAt: NOW - 3 * 60 * 60_000,
+          updatedAt: NOW - 1_000,
+        },
+      ],
+    });
+    act(() => root.render(createElement(FirstMateInbox, { items, now: NOW })));
+    expect(container.querySelector("[data-inbox-id='question:stuck'] [data-waiting]")?.textContent).toBe("waiting 4 minutes");
   });
 
   it("shows no digest when there is nothing to say", () => {

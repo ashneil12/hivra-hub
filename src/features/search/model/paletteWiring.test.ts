@@ -16,7 +16,8 @@ const anywhere: PaletteContext = {
   terminal: true,
   chat: true,
   busy: true,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: true,
 };
 
@@ -25,7 +26,8 @@ const nowhere: PaletteContext = {
   terminal: false,
   chat: false,
   busy: false,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: false,
 };
 
@@ -70,9 +72,8 @@ function sideEffects(
 ): PaletteSideEffects {
   return {
     run: (_name, fn) => fn(),
-    archiveChat: () => "chat-1",
     stopChat: () => "chat-1",
-    archive: (id) => calls.push(`archive:${id}`),
+    archiveFocused: () => calls.push("archive-focused"),
     stop: (id) => calls.push(`stop:${id}`),
     showHome: () => calls.push("home"),
     showChanges: () => calls.push("changes"),
@@ -80,6 +81,9 @@ function sideEffects(
     newWindow: () => calls.push("new-window"),
     zoom: (action) => calls.push(`zoom:${action}`),
     editor: (action) => calls.push(`editor:${action}`),
+    forkChat: () => calls.push("fork"),
+    reportProblem: () => calls.push("report-problem"),
+    computerUseChat: (mode) => calls.push(`computer-use:${mode}`),
     ...overrides,
   };
 }
@@ -150,7 +154,7 @@ describe("the palette wiring", () => {
       ["app.home", "home"],
       ["app.commit", "changes"],
       ["app.create-pr", "changes"],
-      ["Session: Archive", "archive:chat-1"],
+      ["Session: Archive", "archive-focused"],
       ["Session: Stop", "stop:chat-1"],
     ];
     for (const [id, expected] of cases) {
@@ -186,6 +190,36 @@ describe("the palette wiring", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("forks the chat in focus from the palette", () => {
+    const calls: string[] = [];
+    expect(
+      runPaletteCommand(row("session.fork-from-here"), actions(calls), sideEffects(calls)),
+    ).toBe(true);
+    expect(calls).toEqual(["fork"]);
+    const blocked = row("session.fork-from-here", nowhere);
+    expect(runPaletteCommand(blocked, actions(calls), sideEffects(calls))).toBe(false);
+    expect(calls).toEqual(["fork"]);
+  });
+
+  it("opens a Report a problem chat from anywhere (WP-252)", () => {
+    const calls: string[] = [];
+    const problem = row("app.report-problem", nowhere);
+    expect(problem.label).toBe("Report a problem");
+    expect(runPaletteCommand(problem, actions(calls), sideEffects(calls))).toBe(true);
+    expect(calls).toEqual(["report-problem"]);
+  });
+
+  it("gives the chat in view its own say on computer use (WP-255)", () => {
+    const calls: string[] = [];
+    for (const id of ["session.computer-use-observe", "session.computer-use-off", "session.computer-use-follow"])
+      expect(runPaletteCommand(row(id), actions(calls), sideEffects(calls))).toBe(true);
+    expect(calls).toEqual(["computer-use:observe-only", "computer-use:deny", "computer-use:allow"]);
+    // No chat in view, nothing to change.
+    const none: string[] = [];
+    runPaletteCommand(row("session.computer-use-off", nowhere), actions(none), sideEffects(none));
+    expect(none).toEqual([]);
+  });
+
   it("sends zoom and editor rows to their own helpers", () => {
     const calls: string[] = [];
     runPaletteCommand(row("View: Zoom In"), actions(calls), sideEffects(calls));
@@ -217,10 +251,9 @@ describe("the palette wiring", () => {
     expect(calls).toEqual([]);
   });
 
-  it("archives and stops nothing when no chat is in focus", () => {
+  it("stops nothing when no chat is running in focus", () => {
     const calls: string[] = [];
-    const none = sideEffects(calls, { archiveChat: () => null, stopChat: () => null });
-    expect(runPaletteCommand(row("Session: Archive"), actions(calls), none)).toBe(true);
+    const none = sideEffects(calls, { stopChat: () => null });
     expect(runPaletteCommand(row("Session: Stop"), actions(calls), none)).toBe(true);
     expect(calls).toEqual([]);
   });

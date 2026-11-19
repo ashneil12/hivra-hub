@@ -18,6 +18,15 @@ describe("appLink", () => {
     );
   });
 
+  it("keeps a fake service's name, which is a label of its own", () => {
+    expect(appLink("http://github.shop-wp-90.localhost:7400")).toBe(
+      "http://github.shop-wp-90.localhost:7400",
+    );
+    expect(appLink("http://stripe.shop-1a2b3c-a.localhost:7400")).toBe(
+      "http://stripe.shop-1a2b3c-a.localhost:7400",
+    );
+  });
+
   it("drops anything that is not this machine", () => {
     expect(appLink(null)).toBeNull();
     expect(appLink("")).toBeNull();
@@ -26,6 +35,9 @@ describe("appLink", () => {
     expect(appLink("http://127.0.0.1.evil")).toBeNull();
     expect(appLink("http://shop-wp-90.localhost.evil")).toBeNull();
     expect(appLink("http://shop_wp_90.localhost:7400")).toBeNull();
+    expect(appLink("http://.shop.localhost:7400")).toBeNull();
+    expect(appLink("http://shop..wp.localhost:7400")).toBeNull();
+    expect(appLink("http://github.-shop.localhost:7400")).toBeNull();
     expect(appLink("http://user:pw@127.0.0.1:80")).toBeNull();
     expect(appLink("javascript:alert(1)")).toBeNull();
     expect(appLink("file:///etc/passwd")).toBeNull();

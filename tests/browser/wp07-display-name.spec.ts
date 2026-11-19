@@ -4,7 +4,8 @@ test("the words a person reads say Hivra, not the bundle name", async ({ page })
   await page.goto("/tests/browser/wp07-display-name.html");
 
   const daily = page.locator("[data-daily-footer] [data-build-stamp]");
-  await expect(daily).toHaveText("Hivra 0.16.0");
+  await expect(daily).toHaveText(/^Hivra 0\.16\.0 · built .*2026/);
+  await expect(daily).not.toContainText(" @ ");
 
   const dev = page.locator("[data-dev-footer] [data-build-stamp]");
   await expect(dev).toContainText("Hivra 0.16.0");

@@ -1,4 +1,5 @@
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { stripHiddenCharacters } from "../../../features/sessions/model/hiddenText";
 import { withoutTurnRepeats } from "./turnRepeats";
 import { isCliNotice } from "./cliNotices";
 import type {
@@ -25,7 +26,9 @@ import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
+import { childApprovalFrom } from "../../../features/sessions/model/childApproval";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { plainErrorText } from "../../../features/sessions/model/plainError";
 import { providerRetryText } from "./providerFailure";
 
 /** One retry line per turn, counting up in place. */
@@ -131,6 +134,10 @@ export function applyHarnessEvent(
         pendingQuestion: {
           requestId: event.requestId,
           questions: event.questions,
+          // The same question sent again is not a new ask: it keeps the time it was first made.
+          askedAt:
+            (session.pendingQuestion?.requestId === event.requestId ? session.pendingQuestion.askedAt : undefined) ??
+            Date.now(),
           ...(event.title ? { title: event.title } : {}),
           ...(event.autoResolveAt != null
             ? { autoResolveAt: event.autoResolveAt }
@@ -200,7 +207,7 @@ export function applyHarnessEvent(
         {
           id: crypto.randomUUID(),
           role: "system",
-          text: event.message,
+          text: plainErrorText(event.message),
           notice: "error",
           // Why it failed, so the failure is a state the rail, Today and Being built show (turnFailure.ts).
           failure: {
@@ -330,11 +337,8 @@ function mergeTurnMetrics(
     ...(event.cacheHitPercent != null
       ? { cacheHitPercent: event.cacheHitPercent }
       : {}),
-    // WP-108: a price the CLI reported. Messages from one turn merge into the same row, so the
-    // latest reported price adds to what the turn already has.
-    ...(event.costUsd != null
-      ? { costUsd: (current.turnMetrics?.costUsd ?? 0) + event.costUsd }
-      : {}),
+    // WP-108: a price the CLI reported. Each report is the turn's cost so far, so a later one replaces it.
+    ...(event.costUsd != null ? { costUsd: event.costUsd } : {}),
   };
   const blocks = session.blocks.slice();
   blocks[userIndex] = { ...current, turnMetrics: metrics };
@@ -531,6 +535,10 @@ type UserTurnExtra = {
   monoSessionCompletion?: Block["monoSessionCompletion"];
   monoCheck?: Block["monoCheck"];
   monoNote?: Block["monoNote"];
+  /** WP-243: Ash typed it himself. Never kept on a hidden turn. */
+  byOwner?: true;
+  /** Dropwave: sent in the one chat while it was narrowed to this project (asks/model/chiefLens.ts). */
+  lensProject?: string;
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -539,6 +547,8 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.noteCard ? { noteCard: extra.noteCard } : {}),
     ...(extra?.ciContext ? { ciContext: extra.ciContext } : {}),
     ...(extra?.internal ? { internal: true } : {}),
+    ...(extra?.byOwner && !extra.internal ? { byOwner: true as const } : {}),
+    ...(extra?.lensProject && extra.byOwner && !extra.internal ? { lensProject: extra.lensProject } : {}),
     ...(extra?.monocode ? { monocode: true } : {}),
     ...(extra?.intent ? { intent: extra.intent } : {}),
     ...(extra?.appRequestId ? { appRequestId: extra.appRequestId } : {}),
@@ -569,11 +579,13 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    // A real turn starts: any background compact hold is over (WP-115).
+    { ...session, busy: true, turnReady: false, idleCompacting: undefined },
     {
       id: crypto.randomUUID(),
       role: "user",
-      text,
+      // Hidden characters never reach a user turn, whoever built it (hiddenText.ts).
+      text: stripHiddenCharacters(text).text,
       startedAt: Date.now(),
       ...turnModelFields(session),
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -597,7 +609,7 @@ export function appendSteerUser(
       {
         id: crypto.randomUUID(),
         role: "user",
-        text,
+        text: stripHiddenCharacters(text).text,
         sentAt: Date.now(),
         ...turnModelFields(session),
         ...(attachments.length > 0 ? { attachments } : {}),
@@ -614,6 +626,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     turnReady: false,
+    idleCompacting: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       withoutTurnRepeats(
@@ -953,6 +966,14 @@ function attachApproval(
   session: Session,
   event: Extract<HarnessEvent, { type: "approval.requested" }>,
 ): Session {
+  const child = childApprovalFrom(event.child);
+  const approval = {
+    requestId: event.requestId,
+    ...(event.call ? { call: event.call } : {}),
+    ...(event.call && event.callComplete ? { callComplete: true } : {}),
+    ...(child ? { child } : {}),
+    ...(typeof event.actionHash === "string" && event.actionHash ? { actionHash: event.actionHash } : {}),
+  };
   const index = findToolForApproval(session, event);
   if (index >= 0) {
     const blocks = session.blocks.slice();
@@ -983,7 +1004,11 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+      approval: {
+        ...approval,
+        // The same request sent again is not a new ask: it keeps the time it was first made.
+        at: (prev.approval?.requestId === event.requestId ? prev.approval.at : undefined) ?? Date.now(),
+      },
     };
     return { ...session, blocks };
   }
@@ -1001,7 +1026,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+    approval: { ...approval, at: Date.now() },
   });
 }
 

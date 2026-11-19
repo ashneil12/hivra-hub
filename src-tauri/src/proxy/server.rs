@@ -13,16 +13,21 @@
 //! the bytes. An unknown name is a 404, never a default route. No request or response header
 //! is logged: the log holds the hostname, method, status and milliseconds only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
 
 use super::labels::valid_hostname;
 use super::ports::next_free_from;
 use super::routes::RouteStore;
+
+/// Header that names which data folder this proxy belongs to.
+const DATA_HEADER: &str = "X-Hivra-Data";
 
 /// Answer header that tells a real Hivra proxy from anything else on the port.
 pub const PROXY_HEADER: &str = "X-Hivra-Proxy";
@@ -72,16 +77,28 @@ impl BoundProxy {
 }
 
 /// Start a proxy on `port`, loopback only. The listener threads live for the process.
-pub fn start(store: Arc<RouteStore>, port: u16, log_path: PathBuf) -> Result<BoundProxy, String> {
-    start_with(store, port, log_path, Timeouts::default())
+///
+/// `data_id` names the data folder this proxy belongs to. It is held in memory and sent with
+/// every health reply, so no file is read to answer one. `None` answers as an older proxy
+/// did, with no id.
+pub fn start(
+    store: Arc<RouteStore>,
+    port: u16,
+    log_path: PathBuf,
+    data_id: Option<&str>,
+) -> Result<BoundProxy, String> {
+    start_with(store, port, log_path, data_id, Timeouts::default())
 }
 
 fn start_with(
     store: Arc<RouteStore>,
     port: u16,
     log_path: PathBuf,
+    data_id: Option<&str>,
     timeouts: Timeouts,
 ) -> Result<BoundProxy, String> {
+    // The id goes into a response header, so only one this app makes is ever sent.
+    let data_id: Option<Arc<str>> = data_id.filter(|id| valid_data_id(id)).map(Arc::from);
     let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
         .map_err(|error| format!("The proxy can't listen on 127.0.0.1:{port}: {error}"))?;
     let v4_addr = v4.local_addr().map_err(|error| error.to_string())?;
@@ -90,9 +107,15 @@ fn start_with(
     // ::1 may be absent on a machine without IPv6. The v4 listener still serves every name.
     let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, actual)).ok();
     let v6_addr = v6.as_ref().and_then(|listener| listener.local_addr().ok());
-    spawn_accept(v4, store.clone(), log_path.clone(), timeouts);
+    spawn_accept(
+        v4,
+        store.clone(),
+        log_path.clone(),
+        data_id.clone(),
+        timeouts,
+    );
     if let Some(v6) = v6 {
-        spawn_accept(v6, store, log_path, timeouts);
+        spawn_accept(v6, store, log_path, data_id, timeouts);
     }
     Ok(BoundProxy {
         port: actual,
@@ -101,17 +124,58 @@ fn start_with(
     })
 }
 
+/// The proxies this process started, by data folder id, and the port each listens on. The
+/// listener threads live as long as the process, so such a proxy needs no health check: it
+/// cannot have gone away.
+static STARTED: OnceLock<Mutex<HashMap<String, u16>>> = OnceLock::new();
+
+/// One caller at a time per data folder. Two callers that both find no proxy would each start
+/// one, on neighbouring ports.
+static GATES: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn gate_for(data_id: &str) -> Arc<Mutex<()>> {
+    let gates = GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut gates = gates.lock().unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(gates.entry(data_id.to_string()).or_default())
+}
+
+fn started_port(data_id: &str) -> Option<u16> {
+    let started = STARTED.get_or_init(|| Mutex::new(HashMap::new()));
+    let started = started.lock().unwrap_or_else(PoisonError::into_inner);
+    started.get(data_id).copied()
+}
+
+fn remember_started(data_id: &str, port: u16) {
+    let started = STARTED.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut started = started.lock().unwrap_or_else(PoisonError::into_inner);
+    started.insert(data_id.to_string(), port);
+}
+
 /// Start this copy's proxy, or use the one already running. Returns its port.
 ///
 /// A dev copy keeps its registry in its own data folder and never takes the daily app's port.
+/// This is called on every status, down, reset and stale check, from several threads: it writes
+/// nothing when the proxy is already up.
 pub fn ensure_running(
     data_dir: &Path,
     include_dev_ports: bool,
     reserved: &HashSet<u16>,
 ) -> Result<u16, String> {
     let store = Arc::new(RouteStore::new(proxy_dir(data_dir)));
+    let data_id = data_folder_id(data_dir);
+    let gate = gate_for(&data_id);
+    let _one_at_a_time = gate.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(port) = started_port(&data_id) {
+        // Started by this process, so it is still there. The port file is put right if
+        // something changed it, and a folder that can't be written to still has its proxy.
+        let _ = store.write_port(port);
+        return Ok(port);
+    }
     if let Some(port) = store.read_port() {
-        if running(port) {
+        // A port is reused only when the proxy answering there belongs to this folder.
+        // Anything else, including the daily app's proxy and one that names no folder
+        // (an older build), is left alone.
+        if running_as(port, &data_id) {
             return Ok(port);
         }
     }
@@ -129,15 +193,21 @@ pub fn ensure_running(
         }) else {
             break;
         };
-        match start(store.clone(), port, proxy_dir(data_dir).join("proxy.log")) {
+        match start(
+            store.clone(),
+            port,
+            proxy_dir(data_dir).join("proxy.log"),
+            Some(&data_id),
+        ) {
             Ok(bound) => {
                 debug_assert!(bound.loopback_only());
+                remember_started(&data_id, bound.port);
                 store.write_port(bound.port)?;
                 store.write_pid()?;
                 return Ok(bound.port);
             }
-            Err(_) if running(port) => {
-                // Another window started it in the moment between the probe and our bind.
+            Err(_) if running_as(port, &data_id) => {
+                // Another process of this same folder started it between the probe and our bind.
                 store.write_port(port)?;
                 return Ok(port);
             }
@@ -154,9 +224,48 @@ pub fn proxy_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("proxy")
 }
 
+/// A stable id for a data folder: hex of its canonical path, never the path itself.
+pub fn data_folder_id(data_dir: &Path) -> String {
+    let path = crate::fs::canonical(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    let mut out = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// Whether a Hivra proxy answers on `port`. Uses the health path, so a dev server that happens
-/// to hold the port is not mistaken for it.
+/// to hold the port is not mistaken for it. A copy decides whether to reuse the port with
+/// [`running_as`], which also checks the data folder.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn running(port: u16) -> bool {
+    proxy_reply(port).is_some()
+}
+
+/// Whether the proxy on `port` belongs to the data folder `data_id` names.
+pub fn running_as(port: u16, data_id: &str) -> bool {
+    proxy_reply(port).is_some_and(|reply| data_header(&reply) == Some(data_id))
+}
+
+/// Lowercase hex, short enough for one header and not a path.
+fn valid_data_id(id: &str) -> bool {
+    (16..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn data_header(reply: &str) -> Option<&str> {
+    reply.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("x-hivra-data")
+            .then(|| value.trim())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn proxy_reply(port: u16) -> Option<String> {
     for address in [
         SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
         SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
@@ -181,10 +290,10 @@ pub fn running(port: u16) -> bool {
         if reply.starts_with("HTTP/1.1 204")
             && reply.to_ascii_lowercase().contains("x-hivra-proxy: 1")
         {
-            return true;
+            return Some(reply);
         }
     }
-    false
+    None
 }
 
 /// The daily app's proxy port, read only, so a dev copy can avoid it.
@@ -202,6 +311,7 @@ fn spawn_accept(
     listener: TcpListener,
     store: Arc<RouteStore>,
     log_path: PathBuf,
+    data_id: Option<Arc<str>>,
     timeouts: Timeouts,
 ) {
     let _ = std::thread::Builder::new()
@@ -211,9 +321,10 @@ fn spawn_accept(
                 let Ok(stream) = accepted else { continue };
                 let store = Arc::clone(&store);
                 let log_path = log_path.clone();
+                let data_id = data_id.clone();
                 let _ = std::thread::Builder::new()
                     .name("hivra-proxy-request".into())
-                    .spawn(move || serve(stream, &store, &log_path, timeouts));
+                    .spawn(move || serve(stream, &store, &log_path, data_id.as_deref(), timeouts));
             }
         });
 }
@@ -247,7 +358,13 @@ impl RequestHead {
     }
 }
 
-fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path, timeouts: Timeouts) {
+fn serve(
+    mut client: TcpStream,
+    store: &RouteStore,
+    log_path: &Path,
+    data_id: Option<&str>,
+    timeouts: Timeouts,
+) {
     if !client.peer_addr().is_ok_and(|peer| peer.ip().is_loopback()) {
         return;
     }
@@ -273,10 +390,16 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path, timeouts: T
     let _ = client.set_write_timeout(Some(timeouts.stream));
 
     // A health check is the only request answered without a name. It is loopback-only.
+    // The data-folder id comes from memory, so a check never depends on a file another call
+    // may be writing. A proxy started with no id (an older build) answers without one, and a
+    // dev copy can tell that answer is not its own.
     if head.target == HEALTH_PATH && head.method == "GET" {
+        let data = data_id
+            .map(|id| format!("{DATA_HEADER}: {id}\r\n"))
+            .unwrap_or_default();
         let _ = client.write_all(
             format!(
-                "HTTP/1.1 204 No Content\r\n{PROXY_HEADER}: 1\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 204 No Content\r\n{PROXY_HEADER}: 1\r\n{data}Cache-Control: no-store\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         );
@@ -847,7 +970,7 @@ mod tests {
                 .add_route(name, *port, std::process::id(), false)
                 .unwrap();
         }
-        let bound = start(store, 0, dir.path().join("proxy.log")).unwrap();
+        let bound = start(store, 0, dir.path().join("proxy.log"), None).unwrap();
         (dir, bound)
     }
 
@@ -863,7 +986,7 @@ mod tests {
         store
             .add_route("shop-two.localhost", b, std::process::id(), false)
             .unwrap();
-        let bound = start(store, 0, dir.path().join("proxy.log")).unwrap();
+        let bound = start(store, 0, dir.path().join("proxy.log"), None).unwrap();
         let one = request(&bound, &get("shop-one.localhost"));
         let two = request(&bound, &get("shop-two.localhost"));
         assert!(one.ends_with("app-one"), "{one}");
@@ -937,7 +1060,7 @@ mod tests {
         store
             .add_route("shop-ws.localhost", port, std::process::id(), false)
             .unwrap();
-        let bound = start(store, 0, dir.path().join("proxy.log")).unwrap();
+        let bound = start(store, 0, dir.path().join("proxy.log"), None).unwrap();
         let mut stream = TcpStream::connect_timeout(&bound.v4, Duration::from_secs(2)).unwrap();
         stream
             .write_all(
@@ -966,7 +1089,7 @@ mod tests {
                 .add_route(name, *port, std::process::id(), false)
                 .unwrap();
         }
-        let bound = start_with(store, 0, dir.path().join("proxy.log"), timeouts).unwrap();
+        let bound = start_with(store, 0, dir.path().join("proxy.log"), None, timeouts).unwrap();
         (dir, bound)
     }
 
@@ -1118,7 +1241,7 @@ mod tests {
         store
             .add_route("shop-two.localhost", two, std::process::id(), false)
             .unwrap();
-        let bound = start(store, 0, dir.path().join("proxy.log")).unwrap();
+        let bound = start(store, 0, dir.path().join("proxy.log"), None).unwrap();
         let signed_in = request(
             &bound,
             "GET / HTTP/1.1\r\nHost: shop-one.localhost\r\nCookie: sid=one\r\nConnection: close\r\n\r\n",
@@ -1158,7 +1281,7 @@ mod tests {
         store
             .add_route("shop-one.localhost", a, std::process::id(), false)
             .unwrap();
-        let bound = start(store, 0, log_path.clone()).unwrap();
+        let bound = start(store, 0, log_path.clone(), None).unwrap();
         let reply = request(
             &bound,
             "GET /secret HTTP/1.1\r\nHost: shop-one.localhost\r\nAuthorization: Bearer SEKRIT-TOKEN\r\nCookie: sid=SEKRIT-COOKIE\r\nConnection: close\r\n\r\n",
@@ -1210,6 +1333,125 @@ mod tests {
             bound.port
         );
         drop(dir);
+    }
+
+    #[test]
+    fn a_dev_copy_does_not_adopt_another_folders_proxy() {
+        let daily = Guard::new("adopt-daily");
+        let dev = Guard::new("adopt-dev");
+        let daily_port = ensure_running(daily.path(), false, &HashSet::new()).unwrap();
+        // The dev copy's saved port is the other folder's proxy, which is what a dev
+        // copy used to adopt.
+        std::fs::create_dir_all(proxy_dir(dev.path())).unwrap();
+        std::fs::write(
+            proxy_dir(dev.path()).join("proxy.port"),
+            format!("{daily_port}\n"),
+        )
+        .unwrap();
+        let dev_port = ensure_running(dev.path(), true, &HashSet::new()).unwrap();
+        assert_ne!(
+            daily_port, dev_port,
+            "the dev copy took the other folder's proxy"
+        );
+        let daily_id = data_folder_id(daily.path());
+        let dev_id = data_folder_id(dev.path());
+        assert_ne!(daily_id, dev_id);
+        let mut saw_daily = false;
+        let mut saw_dev = false;
+        for _ in 0..40 {
+            saw_daily = running_as(daily_port, &daily_id);
+            saw_dev = running_as(dev_port, &dev_id);
+            if saw_daily && saw_dev {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(saw_daily, "the first folder's proxy did not name itself");
+        assert!(saw_dev, "the dev copy's proxy did not name itself");
+        assert!(!running_as(daily_port, &dev_id));
+        assert!(!running_as(dev_port, &daily_id));
+        // Once each proxy has named its own folder, a later start reuses that port and no other.
+        assert_eq!(
+            ensure_running(daily.path(), false, &HashSet::new()).unwrap(),
+            daily_port
+        );
+        assert_eq!(
+            ensure_running(dev.path(), true, &HashSet::new()).unwrap(),
+            dev_port
+        );
+        assert!(running(daily_port));
+        assert!(running(dev_port));
+    }
+
+    /// An older daily build's proxy answers the health check with no `X-Hivra-Data` at all. It
+    /// is not this folder's, so a dev copy that finds its port in the saved file must start its
+    /// own proxy rather than take it over.
+    #[test]
+    fn a_dev_copy_does_not_adopt_a_proxy_that_names_no_folder() {
+        let older = Guard::new("older-daily");
+        let dev = Guard::new("older-dev");
+        let store = Arc::new(RouteStore::new(proxy_dir(older.path())));
+        let older_bound = start(store, 0, older.path().join("proxy.log"), None).unwrap();
+        let older_port = older_bound.port;
+        // The reply really carries no id.
+        let reply = request(
+            &older_bound,
+            &format!("GET {HEALTH_PATH} HTTP/1.1\r\nHost: 127.0.0.1:{older_port}\r\n\r\n"),
+        );
+        assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+        assert!(
+            !reply.to_ascii_lowercase().contains("x-hivra-data"),
+            "{reply}"
+        );
+        assert!(running(older_port));
+        // The dev copy's saved port is that proxy.
+        std::fs::create_dir_all(proxy_dir(dev.path())).unwrap();
+        std::fs::write(
+            proxy_dir(dev.path()).join("proxy.port"),
+            format!("{older_port}\n"),
+        )
+        .unwrap();
+        let dev_id = data_folder_id(dev.path());
+        assert!(!running_as(older_port, &dev_id));
+        let dev_port = ensure_running(dev.path(), true, &HashSet::new()).unwrap();
+        assert_ne!(dev_port, older_port, "the dev copy took a proxy with no id");
+        assert_eq!(
+            RouteStore::new(proxy_dir(dev.path())).read_port(),
+            Some(dev_port)
+        );
+        assert!(running_as(dev_port, &dev_id));
+    }
+
+    /// `stacks::env_from_app` calls `ensure_running` on every status, down, reset, stale check
+    /// and action start. Each call used to empty and rewrite `proxy/data.id`, and a health
+    /// check that landed in the gap got no `X-Hivra-Data` header, so the running proxy read as
+    /// someone else's and a second one was started on the next port. Callers at the same time,
+    /// from a cold start, must all end up on one proxy.
+    #[test]
+    fn callers_at_the_same_time_all_get_the_one_proxy_and_its_port() {
+        let dir = Guard::new("callers");
+        let data = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let data = data.clone();
+                std::thread::spawn(move || {
+                    (0..40)
+                        .map(|_| ensure_running(&data, false, &HashSet::new()).unwrap())
+                        .collect::<Vec<u16>>()
+                })
+            })
+            .collect();
+        let mut ports: Vec<u16> = threads
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap())
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(ports.len(), 1, "callers saw different proxies: {ports:?}");
+        let store = RouteStore::new(proxy_dir(&data));
+        assert_eq!(store.read_port(), Some(ports[0]));
+        // The port is that folder's own proxy, and nothing else answers for it.
+        assert!(running_as(ports[0], &data_folder_id(&data)));
     }
 
     #[test]

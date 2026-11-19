@@ -77,6 +77,11 @@ export function leadSpecFor(project: Pick<HubProject, "id" | "name" | "shortName
   return spec;
 }
 
+/** The Lead a project already has (seeded or remembered), if any. Never makes one. */
+export function projectLeadOf(projectId: string): LeadSpec | undefined {
+  return LEADS.find((l) => l.projectId === projectId) ?? moreLeads().find((l) => l.projectId === projectId);
+}
+
 export function leadFor(monoId: string): LeadSpec | undefined {
   const match = (lead: LeadSpec) => lead.id === monoId || lead.legacy?.id === monoId;
   return LEADS.find(match) ?? moreLeads().find(match);

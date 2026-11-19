@@ -25,3 +25,28 @@ test("a person lists, adds and assigns a task", async ({ page }, testInfo) => {
   await expect(page.getByText("Assigned to mate-3")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("tasks.png") });
 });
+
+// WP-250: a first mate takes unassigned tasks that match its rule.
+test("a person sets which tasks a first mate picks up", async ({ page }, testInfo) => {
+  await page.goto("/tests/browser/tasks.html");
+  await page.getByRole("button", { name: "Pickup rules" }).click();
+  const rules = page.getByRole("region", { name: "Pickup rules" });
+  await expect(rules.getByText("No rules yet.")).toBeVisible();
+
+  const mate = rules.getByLabel("First mate");
+  await expect(mate.locator("option")).toHaveText(["First mate", "Scout"]);
+  await mate.selectOption({ label: "Scout" });
+  await rules.getByRole("button", { name: "Save rule" }).click();
+  await expect(rules).toContainText("would take every task");
+
+  await rules.getByLabel("Statuses").fill("Todo");
+  await rules.getByLabel("Labels").fill("bug, ui");
+  await rules.getByRole("button", { name: "Save rule" }).click();
+  await expect(rules).toContainText("Scout: Takes unassigned tasks in this project with status Todo, labelled bug and ui");
+  await page.screenshot({ path: testInfo.outputPath("pickup-rules.png") });
+
+  await rules.getByRole("button", { name: "Turn off" }).click();
+  await expect(rules).toContainText("(off)");
+  await rules.getByRole("button", { name: "Remove" }).click();
+  await expect(rules.getByText("No rules yet.")).toBeVisible();
+});

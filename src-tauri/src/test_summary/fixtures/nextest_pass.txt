@@ -1,0 +1,5 @@
+    Starting 2 tests across 1 binary
+        PASS [   0.003s] foo tests::adds
+        PASS [   0.004s] foo tests::subtracts
+------------
+     Summary [   0.005s] 2 tests run: 2 passed, 0 skipped

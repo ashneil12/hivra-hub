@@ -442,6 +442,77 @@ pub fn exchange(
     tokens_from(&reply, client, None)
 }
 
+/// Hivra Cloud's code exchange. Unlike [`exchange`], this does not follow a redirect and does not use an
+/// environment proxy, so the authorization code cannot be sent on to another host. A reply with no `expires_in`
+/// is already expired.
+pub fn exchange_once(
+    client: &Client,
+    code: &str,
+    verifier: &str,
+    redirect: &str,
+) -> Result<OAuthTokens, String> {
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", redirect),
+        ("client_id", client.client_id.as_str()),
+        ("code_verifier", verifier),
+    ];
+    if let Some(secret) = client.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
+    if let Some(resource) = client.resource.as_deref() {
+        form.push(("resource", resource));
+    }
+    let reply = post_form_once(&client.token_endpoint, &form)?;
+    let mut tokens = tokens_from(&reply, client, None)?;
+    if reply.get("expires_in").and_then(Value::as_u64).is_none() {
+        tokens.expires_at = Some(0);
+    }
+    Ok(tokens)
+}
+
+/// One POST. A 3xx is a refusal. Env proxies are off, so they cannot move the code.
+fn post_form_once(endpoint: &str, form: &[(&str, &str)]) -> Result<Value, String> {
+    secure(endpoint.to_string(), "tokens")?;
+    let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .redirects(0)
+        .timeout(Duration::from_secs(30))
+        .build();
+    match agent
+        .post(endpoint)
+        .set("Accept", "application/json")
+        .send_form(form)
+    {
+        Ok(response) if (200..300).contains(&response.status()) => json_body(response)
+            .ok_or_else(|| "The sign-in server's answer wasn't readable.".to_string()),
+        Ok(response) => Err(format!(
+            "The sign-in server refused the code ({}).",
+            response.status()
+        )),
+        Err(ureq::Error::Status(code, response)) => {
+            let reason = json_body(response)
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            Err(format!(
+                "The sign-in server refused the code ({code}{}).",
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {reason}")
+                }
+            ))
+        }
+        Err(ureq::Error::Transport(_)) => Err(format!("Couldn't reach {}.", display_url(endpoint))),
+    }
+}
+
 /// Swap the refresh token for a new access token. The old refresh token is kept when none comes back.
 pub fn refresh(tokens: &OAuthTokens) -> Result<OAuthTokens, String> {
     let refresh = tokens
@@ -627,6 +698,7 @@ pub(crate) mod tests {
     ) -> super::super::secrets::Login {
         super::super::secrets::Login {
             fields: Default::default(),
+            refs: Default::default(),
             oauth: Some(OAuthTokens {
                 access_token: "ACCESS_0".into(),
                 refresh_token: Some("REFRESH_0".into()),

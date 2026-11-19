@@ -1,0 +1,8 @@
+id: rust-spawn-own-process-group-files
+snapshots:
+  "fn helper() {\n    Command::new(\"git\").arg(\"status\").spawn().unwrap();\n}\n":
+    labels:
+    - source: Command::new("git")
+      style: primary
+      start: 18
+      end: 37

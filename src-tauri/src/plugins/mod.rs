@@ -14,12 +14,16 @@ mod install;
 pub mod manifest;
 pub mod mcp;
 pub mod registry;
+// WP-101: what a staged copy holds, read before the person is asked to install it.
+pub mod scan;
 mod source;
 pub mod verify;
 pub mod wiring;
 // WP-34: Creator mode, on top of the install path above.
 pub mod creator;
 
+#[cfg(test)]
+mod commands_tests;
 #[cfg(test)]
 mod creator_tests;
 #[cfg(test)]
@@ -29,10 +33,13 @@ mod desktop_tests;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]
+mod scan_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod verify_tests;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -91,6 +98,37 @@ fn scope(project: Option<String>) -> Result<Scope, String> {
 #[tauri::command(async)]
 pub fn plugins_list(app: tauri::AppHandle) -> Result<registry::Registry, String> {
     registry::read(&host(&app)?)
+}
+
+/// Slash commands from plugins that are on for `cwd`. A missing or unreadable registry is an empty list.
+/// Each plugin is read from its files again: a recorded command name is not trusted, and one broken command
+/// does not drop its siblings. The same command name keeps the first plugin in name order.
+pub fn plugin_commands_for(host: &Host, cwd: &Path) -> Vec<hivra::Command> {
+    let Ok(registry) = registry::read(host) else {
+        return Vec::new();
+    };
+    let mut by_name: BTreeMap<String, hivra::Command> = BTreeMap::new();
+    for (name, entry) in &registry.plugins {
+        if !entry.active_for(Some(cwd)) {
+            continue;
+        }
+        let Ok(loaded) = load_plugin(&host.installed(name)) else {
+            continue;
+        };
+        for command in loaded.hivra.commands {
+            by_name.entry(command.name.clone()).or_insert(command);
+        }
+    }
+    by_name.into_values().collect()
+}
+
+/// WP-182: the card's command list. Same rules as `plugin_commands_for`.
+#[tauri::command(async)]
+pub fn list_plugin_commands(app: tauri::AppHandle, cwd: String) -> Vec<hivra::Command> {
+    let Ok(host) = host(&app) else {
+        return Vec::new();
+    };
+    plugin_commands_for(&host, &crate::fs::expand_home(&cwd))
 }
 
 /// Read and validate a plugin folder without installing it.
@@ -206,6 +244,8 @@ pub fn plugins_session_wiring(
         .ok()
         .map(|exe| exe.to_string_lossy().into_owned());
     let cwd = crate::fs::expand_home(&cwd);
+    // WP-101 fix round 2: the person's own server names, reported with the wiring so a call can be checked against the
+    // name Claude Code reads rather than the one a config spells.
     let taken = crate::mcp::names_in_use(&cwd);
     // WP-43: a chat passes its agent so the browser plugin gets that profile. Other plugins ignore it.
     let name = agent_name.unwrap_or_else(|| "This chat".into());

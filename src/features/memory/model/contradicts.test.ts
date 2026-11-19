@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { contradicts } from "./contradicts";
 import { memoryId, parseDoc, type MemoryDoc, type MemoryItem } from "./doc";
+import { recallDecision } from "./recallPolicy";
 import { acceptItem, deleteItem, DISPUTE_REASON, editItem, parkedDisputes, rejectItem, resolveDispute, withContradiction } from "./review";
 
 const NOW = Date.parse("2026-03-01T00:00:00Z");
@@ -147,12 +148,22 @@ describe("a parked contradiction", () => {
     const yarn = fact("uses yarn");
     const incoming = fact("uses pnpm", { state: "unreviewed" });
     const parked = withContradiction(doc([npm, yarn]), incoming);
-    expect(parked.doc.items.map((item) => item.state)).toEqual(["unreviewed", "unreviewed"]);
+    expect(parked.doc.items.map((item) => item.state)).toEqual(["confirmed", "confirmed"]);
     expect(parked.doc.items.every((item) => item.dispute?.otherId === incoming.id && item.dispute.was === "confirmed")).toBe(true);
     expect(parked.item.dispute).toEqual({ otherId: npm.id, reason: DISPUTE_REASON });
     const kept = resolveDispute(doc([...parked.doc.items, parked.item]), npm.id, "keep-old", NOW);
     expect(kept.items.map((item) => item.text).sort()).toEqual(["uses npm", "uses yarn"]);
     expect(kept.items.every((item) => item.state === "confirmed" && item.dispute === undefined)).toBe(true);
+  });
+
+  it("keeps the older confirmed fact in recall after parking", () => {
+    const npm = fact("uses npm");
+    const incoming = fact("uses pnpm", { state: "unreviewed" });
+    const parked = withContradiction(doc([npm]), incoming);
+    const together = doc([...parked.doc.items, parked.item]);
+    const decision = recallDecision({ doc: together, mateId: "notes-lead", message: "uses npm", now: NOW, mode: "explicit" });
+    expect(decision.picked).toContain(npm.id);
+    expect(parked.doc.items[0]).toMatchObject({ state: "confirmed", dispute: { was: "confirmed" } });
   });
 
   it("shows the pair when either side matches the search", () => {

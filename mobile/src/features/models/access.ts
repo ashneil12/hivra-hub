@@ -40,6 +40,11 @@ export const ACCESS_MODES: {
 
 export const DEFAULT_ACCESS: RuntimeMode = "supervised";
 
+/** The icon for a permission mode, by its id (the desktop sends names and hints, not icons). */
+export function accessIcon(id: RuntimeMode): IconName {
+  return ACCESS_MODES.find((mode) => mode.id === id)?.icon ?? "lock";
+}
+
 export function accessMode(id: RuntimeMode | undefined) {
   return ACCESS_MODES.find((mode) => mode.id === id) ?? ACCESS_MODES[0];
 }

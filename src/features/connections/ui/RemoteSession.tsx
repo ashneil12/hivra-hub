@@ -1121,8 +1121,8 @@ function ConnectedRemoteSession({
   const approve = (
     requestId: number,
     decision: Parameters<SessionPaneProps["onApproval"]>[2],
-  ) => {
-    if (!hostSession || !snapshot?.runId) return;
+  ): boolean => {
+    if (!hostSession || !snapshot?.runId) return false;
     void run({
       type: "approve",
       commandId: crypto.randomUUID(),
@@ -1131,6 +1131,7 @@ function ConnectedRemoteSession({
       requestId,
       decision,
     });
+    return true;
   };
   const answer = (
     requestId: number,

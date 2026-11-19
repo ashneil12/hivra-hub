@@ -10,6 +10,9 @@
 //
 // The key lives in one closure variable and nowhere else: never in process.env, a child's environment, a file, a log
 // line, an error message, a response or a thrown value. Every path that could echo it replaces it with "[key]" first.
+//
+// Only two calls are forwarded: POST /v1/messages and POST /v1/messages/count_tokens. Every JSON object is sent with
+// the pinned model, and a `models` field is dropped, so the caller cannot choose a different one.
 
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -87,7 +90,15 @@ function sameToken(given, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-/** The request body with its `model` set to the relay's one model. Anything that isn't that JSON is passed through. */
+/** The two paths a run may ask the relay to forward. Matched after the request line is resolved, so `..` cannot widen it. */
+const RELAY_PATHS = new Set(["/v1/messages", "/v1/messages/count_tokens"]);
+const RELAY_POST_ONLY = "this relay only forwards POST";
+const RELAY_PATHS_ONLY = "this relay only forwards /v1/messages and /v1/messages/count_tokens";
+
+/**
+ * A JSON object goes out with the pinned model, and its `models` field removed. That field is how a caller would
+ * still choose a model once `model` is pinned. Anything that isn't a JSON object is passed through.
+ */
 export function rewriteRelayBody(body, model) {
   let json;
   try {
@@ -95,16 +106,34 @@ export function rewriteRelayBody(body, model) {
   } catch {
     return body;
   }
-  if (!json || typeof json !== "object" || Array.isArray(json) || !("model" in json)) return body;
+  if (!json || typeof json !== "object" || Array.isArray(json)) return body;
   json.model = model;
+  delete json.models;
   return Buffer.from(JSON.stringify(json), "utf8");
+}
+
+/**
+ * The path this call may take, or a refusal. The request line is untrusted: an absolute URL, a foreign host and `..`
+ * are resolved first, and only POST /v1/messages and POST /v1/messages/count_tokens pass.
+ */
+function allowedRelayTarget(req) {
+  if (String(req.method ?? "") !== "POST") return { status: 405, text: RELAY_POST_ONLY };
+  let parsed;
+  try {
+    parsed = new URL(req.url ?? "/", "http://127.0.0.1");
+  } catch {
+    return { status: 403, text: RELAY_PATHS_ONLY };
+  }
+  const foreign = parsed.hostname !== "127.0.0.1" || parsed.username !== "" || parsed.password !== "";
+  if (foreign || !RELAY_PATHS.has(parsed.pathname)) return { status: 403, text: RELAY_PATHS_ONLY };
+  return { path: parsed.pathname, search: parsed.search };
 }
 
 /**
  * The relay: 127.0.0.1 only, an OS-chosen port, one fixed model, the key in a closure variable, and this run's token.
  *
  * `readKey` is injected (its default is the Keychain read above) and called once, at start. `upstream` is the
- * Anthropic-compatible base to forward to (`upstream + path`), `model` is what every forwarded body's `model` becomes,
+ * Anthropic-compatible base the two allowed paths are appended to, `model` is what every JSON body's `model` becomes,
  * and `token` is minted when none is passed.
  *
  * Returns `{ host, port, url, token, server, close() }`. `server` is the Node server, so a caller can prove the address
@@ -132,17 +161,23 @@ export async function startOpenRouterRelay({ readKey = keychainOpenRouterKey, up
   }
 
   const sockets = new Set();
-  const answer = (res, status, text) => {
+  const answer = (res, status, text, extra = {}) => {
     if (res.headersSent || res.writableEnded) return;
-    res.writeHead(status, { "content-type": "text/plain; charset=utf-8", ...(status === 401 ? { "www-authenticate": "Bearer" } : {}) });
+    res.writeHead(status, { "content-type": "text/plain; charset=utf-8", ...(status === 401 ? { "www-authenticate": "Bearer" } : {}), ...extra });
     res.end(`${text}\n`);
   };
 
-  /** Forward what this caller sent to OpenRouter, replacing its sign-in with the relay's own. */
-  const forward = (req, res, body) => {
+  /** Forward an allowed call to OpenRouter, replacing its sign-in with the relay's own. The path is the resolved one. */
+  const forward = (req, res, body, target) => {
     let url;
     try {
-      url = new URL(`${base}${req.url ?? "/"}`);
+      url = new URL(base);
+      // Append the allowed path under the base's own path. Concatenating the raw request line would let `..` climb out
+      // of it (the real base ends in `/api`).
+      const prefix = url.pathname.replace(/\/+$/, "");
+      url.pathname = `${prefix}${target.path}`;
+      url.search = target.search;
+      url.hash = "";
     } catch {
       answer(res, 502, "the relay could not read the address this call asked for");
       return;
@@ -201,12 +236,18 @@ export async function startOpenRouterRelay({ readKey = keychainOpenRouterKey, up
       answer(res, 401, "this relay answers only the run that started it: the token is missing or wrong");
       return;
     }
+    const target = allowedRelayTarget(req);
+    if (target.status) {
+      req.resume();
+      answer(res, target.status, target.text, target.status === 405 ? { allow: "POST" } : {});
+      return;
+    }
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("error", () => {
       // a caller that went away: the answer is closed, there is nothing to forward
     });
-    req.on("end", () => forward(req, res, Buffer.concat(chunks)));
+    req.on("end", () => forward(req, res, Buffer.concat(chunks), target));
   };
 
   const server = http.createServer(handle);

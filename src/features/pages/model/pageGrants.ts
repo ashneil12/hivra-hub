@@ -85,7 +85,7 @@ function hostOf(url: string): string {
  */
 export function validSource(raw: string, label?: string): ValidGrant {
   const text = raw.trim();
-  if (!text) return { ok: false, error: "Type the web address the page should read." };
+  if (!text) return { ok: false, error: "Type the web address the hub should read." };
   if (text.length > MAX_URL) return { ok: false, error: "That web address is too long." };
   let url: URL;
   try {
@@ -93,10 +93,10 @@ export function validSource(raw: string, label?: string): ValidGrant {
   } catch {
     return { ok: false, error: "That isn't a web address. It should start with https://" };
   }
-  if (url.protocol !== "https:") return { ok: false, error: "A page can only read https:// addresses, so the data can't be read or changed on the way." };
-  if (url.username || url.password) return { ok: false, error: "Leave the name and password out of the address. If it needs a token, add it here and the app keeps it, not the page." };
+  if (url.protocol !== "https:") return { ok: false, error: "A hub can only read https:// addresses, so the data can't be read or changed on the way." };
+  if (url.username || url.password) return { ok: false, error: "Leave the name and password out of the address. If it needs a token, add it here and the app keeps it, not the hub." };
   if (PRIVATE.test(url.host) || /\.(local|localhost|internal)$/i.test(url.hostname)) {
-    return { ok: false, error: "That's this Mac or your local network. A page can only read a public web address." };
+    return { ok: false, error: "That's this Mac or your local network. A hub can only read a public web address." };
   }
   if (!url.hostname) return { ok: false, error: "That isn't a web address. It should start with https://" };
   const path = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
@@ -142,8 +142,8 @@ export function connectSource(pageId: string, raw: string, label?: string): { ok
   if (!valid.ok) return valid;
   const mine = grantsFor(pageId);
   const already = mine.find((g) => g.url === valid.value.url);
-  if (already) return { ok: false, error: `The page is already connected to ${already.label}.` };
-  if (mine.length >= MAX_PER_PAGE) return { ok: false, error: `A page can be connected to ${MAX_PER_PAGE} sources at once. Disconnect one first.` };
+  if (already) return { ok: false, error: `The hub is already connected to ${already.label}.` };
+  if (mine.length >= MAX_PER_PAGE) return { ok: false, error: `A hub can be connected to ${MAX_PER_PAGE} sources at once. Disconnect one first.` };
   const grant: PageGrant = { url: valid.value.url, label: valid.value.label, at: Date.now() };
   store = { ...store, [pageId]: [...mine, grant] };
   save();

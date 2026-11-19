@@ -41,6 +41,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::session_store::{now_millis, SessionStore};
 
+// SC-19: a retired chat's open work moves to the chat that takes its place (reparent.rs).
+pub mod reparent;
+
 /// Tauri event after any change: `{ids}`.
 pub const CHANGED: &str = "monocode:delegations-changed";
 
@@ -159,6 +162,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN report TEXT;",
         )?;
     }
+    // WP-176 round 4: the redo link, kept apart from the row so a later save of the row cannot drop it.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delegation_redos (
+           new_id TEXT PRIMARY KEY,
+           old_id TEXT NOT NULL,
+           owner_session TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         );",
+    )?;
     // WP-42: when this run started. The log only keeps 50 lines, so a resume time stored there can be trimmed
     // before settle, and older proof would be attached as this run's.
     let has_run_started = conn
@@ -166,6 +178,36 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
         .exists([])?;
     if !has_run_started {
         conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
+    }
+    // A row a memory or chat import wrote: history from another copy, which lends no folder (chat_media). Older stores
+    // get the column here, with every existing row unmarked.
+    let has_imported = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'imported'")?
+        .exists([])?;
+    if !has_imported {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    // SC-4 (firstmate/brief_checks.rs): the commit the brief was written against, its own runnable check lines (JSON,
+    // each with `passes` that only the gates set) and its do-not-touch list (JSON). All null on a row from before.
+    let has_brief = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'brief_checks'")?
+        .exists([])?;
+    if !has_brief {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN brief_stamp TEXT;
+             ALTER TABLE delegations ADD COLUMN brief_checks TEXT;
+             ALTER TABLE delegations ADD COLUMN brief_leave TEXT;",
+        )?;
+    }
+    // PT-6 (firstmate/spec_record.rs): the brief's spec parts (JSON): the sections of the project's spec of record it asks
+    // for. Null on a row from before, and on a brief with none.
+    let has_spec = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'brief_spec'")?
+        .exists([])?;
+    if !has_spec {
+        conn.execute_batch("ALTER TABLE delegations ADD COLUMN brief_spec TEXT;")?;
     }
     Ok(())
 }
@@ -544,8 +586,30 @@ fn mono_id_ok(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// The studio's ask id rule (ashos/hub.py ASK_ID): one bad id refuses the whole copy, so it is refused here first.
+/// An ask id a job may carry: a ledger id, or one of the retired Ash OS ids. One bad id refuses the whole copy, so it is
+/// refused here first.
 fn ask_id_ok(value: &str) -> bool {
+    ledger_ask_id_ok(value) || old_ask_id_ok(value)
+}
+
+/// The ask ledger's id (src/features/asks/model/asks.ts `askId`, `isLedgerAskId`): `ask-<number>-<up to 12 letters or
+/// digits of the message's id>`, as `asks.list` gives it. A job that carries one updates that ask when it ends.
+fn ledger_ask_id_ok(value: &str) -> bool {
+    let Some((number, block)) = value
+        .strip_prefix("ask-")
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return false;
+    };
+    (1..=9).contains(&number.len())
+        && number.bytes().all(|b| b.is_ascii_digit())
+        && block.len() <= 12
+        && block.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// The retired studio's ask id rule (ashos/hub.py ASK_ID). Still accepted so an old row or habit that passes one keeps
+/// working; nothing new writes them.
+fn old_ask_id_ok(value: &str) -> bool {
     value.strip_prefix("a_").is_some_and(|rest| {
         !rest.is_empty() && rest.len() <= 40 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
     })
@@ -620,6 +684,23 @@ pub struct RecordInput {
     /// WP-70: the person's task this work picks up. Absent, a task is created with the delegation.
     #[serde(default)]
     pub task_id: Option<String>,
+    /// WP-203: set only by the app's review launcher (delivery/review.rs). Skipped by serde, so no JSON from a caller can
+    /// set it: with it false, the review owner and the review request ids are refused.
+    #[serde(skip)]
+    pub review_launch: bool,
+    /// WP-141: why the crew picked this CLI or Mono, one plain line. Kept on the "recorded" line as `why`.
+    #[serde(default)]
+    pub pick_reason: Option<String>,
+    /// WP-176 round 5: the owner's row this one redoes. The link is written in the same transaction as the row, so it
+    /// exists before the chat's first turn is judged. Refused when that row is not the owner's.
+    #[serde(default)]
+    pub redoes: Option<String>,
+}
+
+/// WP-141: a pick reason as one plain line of at most 240 characters. Empty is none.
+fn pick_reason(value: Option<String>) -> Option<String> {
+    let line = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty()).then(|| cap(&line, 240))
 }
 
 const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
@@ -642,6 +723,29 @@ fn open_for_child(conn: &Connection, child: &str) -> Result<Vec<Delegation>, Str
     )
 }
 
+/// Keeps the redo link from `new_id` to the owner's `old_id` row. A link that is already kept is left as it is, so a
+/// retry cannot swap the parent. A parent that is not the owner's is refused.
+fn link_redo(
+    conn: &Connection,
+    owner: &str,
+    new_id: &str,
+    old_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    let parent_is_owners = get(conn, old_id)?
+        .map(|old| old.owner_session == owner)
+        .unwrap_or(false);
+    if !parent_is_owners {
+        return Err("the task this one redoes is not one of yours".into());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO delegation_redos (new_id, old_id, owner_session, created_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![new_id, old_id, owner, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Record a delegation before its child starts. The same owner and request id return the row already there (a launch
 /// retried with its receipt revives a refused one). An older open row for the same child is cancelled: the new request
 /// takes the session over, and its owner already knows.
@@ -655,7 +759,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         .map(|a| a.trim().to_string())
         .collect::<Vec<_>>();
     if asks.len() > ASKS_MAX || !asks.iter().all(|a| ask_id_ok(a)) {
-        return Err("ask ids must be up to 50 ask ids (a_...)".into());
+        return Err("ask ids must be up to 50 ask ids (ask-5-abc123, an \"id\" from asks.list; an old a_... id is still accepted)".into());
     }
     let follow = input
         .follow
@@ -665,6 +769,16 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         if !FOLLOWS.contains(&f) {
             return Err("follow must be queue, steer or lead".into());
         }
+    }
+    // WP-203: the review owner and its request ids belong to the app's launcher. A caller can't claim either, and the
+    // launcher's own record must name both.
+    let review_owner = owner == crate::delivery::review::OWNER;
+    let review_request = request.starts_with(crate::delivery::review::REQUEST_PREFIX);
+    if (review_owner || review_request) && !(input.review_launch && review_owner && review_request)
+    {
+        return Err(
+            "security reviews are started by the app's review launcher, not by a caller".into(),
+        );
     }
     let by = actor(input.by);
     let tx = conn
@@ -686,6 +800,9 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         }
         // WP-70: a retried record still has a task.
         crate::tasks::sync::on_delegation(&tx, &existing, input.task_id.as_deref())?;
+        if let Some(old) = input.redoes.as_deref() {
+            link_redo(&tx, &owner, &existing.id, old, now)?;
+        }
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(existing);
     }
@@ -767,18 +884,20 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         status: crate::firstmate::status::Status::Working,
         status_notice: None,
     };
-    row.note(
-        now,
-        &by,
-        "recorded",
-        follow
-            .map(|f| json!({ "follow": f }))
-            .unwrap_or_else(|| json!({})),
-    );
+    let mut recorded = follow
+        .map(|f| json!({ "follow": f }))
+        .unwrap_or_else(|| json!({}));
+    if let (Some(why), Some(extra)) = (pick_reason(input.pick_reason), recorded.as_object_mut()) {
+        extra.insert("why".into(), json!(why));
+    }
+    row.note(now, &by, "recorded", recorded);
     row.refresh_status();
     insert(&tx, &row)?;
     // WP-70: the brief's task, or the person's task this work picks up.
     crate::tasks::sync::on_delegation(&tx, &row, input.task_id.as_deref())?;
+    if let Some(old) = input.redoes.as_deref() {
+        link_redo(&tx, &row.owner_session, &row.id, old, now)?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(row)
 }
@@ -873,13 +992,138 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         detail["error_class"] = json!(class);
     }
     row.note(now, &by, "settled", detail);
+    // A plan-less fix round writes no new verdict when the facts are clean, so the first round's
+    // send-back would still be on the row when the report is delivered. A completed delivery clears
+    // that failure. A verdict that is not a send-back stays as it is. The log keeps the reason.
+    // A resumed turn, a boot settle, or a followed brief delivers without running the gates again.
+    // That must not clear a send-back on a row that has a plan. A plan-less fix still clears here.
+    if row.state == COMPLETED
+        && row.gate_verdict.as_deref() == Some(crate::firstmate::status::GateVerdict::FAILED)
+        && crate::firstmate::status::sent_back_on(&row)
+        && crate::firstmate::gates::plan_of(&tx, &row.id)?.is_none()
+    {
+        row.gate_verdict = Some(crate::firstmate::status::GateVerdict::PASSED.into());
+    }
     row.touch(now);
     save(&tx, &row)?;
+    // WP-203: a completed security review is recorded here, by the app, from this row's result. No other path writes it.
+    if row.owner_session == crate::delivery::review::OWNER
+        && row
+            .request_id
+            .starts_with(crate::delivery::review::REQUEST_PREFIX)
+        && row.state == COMPLETED
+    {
+        crate::delivery::review::record_settled(
+            &tx,
+            &row.id,
+            &row.request_id,
+            row.result.as_deref(),
+            now,
+        )?;
+    }
+    // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here. The line is
+    // written in a savepoint: a journal that cannot be written is logged and skipped, and the task is still done.
+    if row.state == COMPLETED || row.state == FAILED {
+        crate::work_log::best_effort(&tx, "finished task", |conn| record_work_outcome(conn, &row));
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(Change {
         applied: true,
         row: Some(row),
     })
+}
+
+/// The work log line for a delegation that just finished. Rework is send-backs already stored, plus each resumed
+/// generation after the first. The source keeps a retry of this same finish from writing a second line.
+fn record_work_outcome(conn: &Connection, row: &Delegation) -> Result<(), String> {
+    let ending = if row.state == COMPLETED {
+        "done"
+    } else {
+        "failed"
+    };
+    let rework = crate::work_log::sent_back_count(conn, &row.id)?
+        .saturating_add(row.generation.saturating_sub(1));
+    let source = crate::work_log::delegation_source(&row.id, ending, row.generation);
+    let task = row
+        .title
+        .as_deref()
+        .or(row.goal.as_deref())
+        .or(row.brief.as_deref())
+        .unwrap_or("");
+    crate::work_log::record_outcome(
+        conn,
+        &crate::work_log::FinishedWork {
+            project: row.project.as_deref().unwrap_or(""),
+            task_id: &row.id,
+            task,
+            delivered: row.result.as_deref().unwrap_or(""),
+            problem: if ending == "failed" {
+                row.error.as_deref().unwrap_or("")
+            } else {
+                ""
+            },
+            ending,
+            rework,
+            queued_at: row.created_at,
+            at_ms: row.settled_at.unwrap_or(row.updated_at),
+            source: &source,
+        },
+    )?;
+    Ok(())
+}
+
+/// WP-157: the checks sent this work back for another try. A repeat of the same try returns the first line. A task
+/// that is already finished, or already gone, changes nothing: a late result is not a new outcome.
+pub(crate) fn sent_back(
+    conn: &mut Connection,
+    id: &str,
+    rework: i64,
+    report: &str,
+    now: i64,
+) -> Result<Option<crate::work_log::Line>, String> {
+    if !(1..=100).contains(&rework) {
+        return Err("Rework has to be from 1 to 100.".into());
+    }
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("There's no task with that id.".into());
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(row) = get(&tx, id)? else {
+        return Ok(None);
+    };
+    if !row.is_open() {
+        return Ok(None);
+    }
+    let shown = crate::work_log::sent_back_count(&tx, &row.id)?
+        .saturating_add(row.generation.saturating_sub(1))
+        .saturating_add(1);
+    let source = crate::work_log::delegation_source(&row.id, "sent-back", rework);
+    let task = row
+        .title
+        .as_deref()
+        .or(row.goal.as_deref())
+        .or(row.brief.as_deref())
+        .unwrap_or("");
+    let line = crate::work_log::record_outcome(
+        &tx,
+        &crate::work_log::FinishedWork {
+            project: row.project.as_deref().unwrap_or(""),
+            task_id: &row.id,
+            task,
+            delivered: report,
+            problem: "",
+            ending: "sent back",
+            rework: shown,
+            queued_at: row.created_at,
+            at_ms: now,
+            source: &source,
+        },
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(line))
 }
 
 struct StagedProof {
@@ -1225,6 +1469,10 @@ pub struct DeliveryInput {
     pub queued_message: Option<String>,
     #[serde(default)]
     pub by: Option<String>,
+    /// SC-19: only rows this chat still owns move (compare-and-swap on the owner). A window that has not heard its chat
+    /// was reset names the old one here, so its late "queued" mark never overwrites the move's own.
+    #[serde(default)]
+    pub owner_session: Option<String>,
 }
 
 /// Move the report's delivery. Returns the rows that changed; a repeated, backwards or post-dispose move is a no-op.
@@ -1242,6 +1490,7 @@ pub fn set_delivery(
         return Err("a queued report names the message it waits in".into());
     }
     let by = actor(input.by);
+    let owner = text(input.owner_session, 256);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1263,7 +1512,11 @@ pub fn set_delivery(
     }
     let mut changed = Vec::new();
     for mut row in rows {
-        if !delivery_move(&row, wanted, message.as_deref()) {
+        if owner
+            .as_deref()
+            .is_some_and(|owner| row.owner_session != owner)
+            || !delivery_move(&row, wanted, message.as_deref())
+        {
             continue;
         }
         let was = row.delivery.clone();
@@ -1328,6 +1581,37 @@ pub fn cancel(
     Ok(changed)
 }
 
+/// A chat that redid another: its child session and the session it took over from (WP-176 round 4).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedoLink {
+    pub child: String,
+    pub parent: String,
+}
+
+/// Every redo link, for the spend gate: a redo counts against the ceiling of the chat it redid.
+pub fn redo_links(conn: &Connection) -> Result<Vec<RedoLink>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT new_row.child_session, old_row.child_session
+               FROM delegation_redos link
+               JOIN delegations new_row ON new_row.id = link.new_id
+               JOIN delegations old_row ON old_row.id = link.old_id
+              ORDER BY link.created_at, link.new_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RedoLink {
+                child: row.get(0)?,
+                parent: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
 /// The owner retried or split one of its tasks (delegate_task `redoes`): `task` is the new task that takes it on. Kept
 /// in the row's log, so its card can say what the Lead did after a restart too; several in one go are a split.
 pub fn note_redo(
@@ -1347,6 +1631,18 @@ pub fn note_redo(
     };
     if row.id == task {
         return Err("a task can't redo itself".into());
+    }
+    // The link is kept only for a new task that is the owner's: its chat then continues this one's spend ceiling
+    // (redo_links). A name that is not a task of the owner's is still noted in the log, as before, with no link.
+    if get(&tx, &task)?
+        .filter(|new| new.owner_session == owner)
+        .is_some()
+    {
+        tx.execute(
+            "INSERT OR IGNORE INTO delegation_redos (new_id, old_id, owner_session, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![task, row.id, owner, now],
+        )
+        .map_err(|e| e.to_string())?;
     }
     row.note(
         now,
@@ -1441,6 +1737,84 @@ pub fn list_open(conn: &Connection) -> Result<Vec<Delegation>, String> {
     )
 }
 
+/// Every row's chat and whether the row shows as done (`firstmate::status::is_done`), oldest first, without loading the
+/// rows' text: the worktree clean-up reads the newest row per chat to see whether a worker's task was accepted.
+pub(crate) fn acceptance(conn: &Connection) -> Result<Vec<(String, bool)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT child_session, state, gate_verdict FROM delegations ORDER BY created_at, rowid",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(child, state, gate)| {
+            let done = crate::firstmate::status::is_done(&state, gate.as_deref());
+            (child, done)
+        })
+        .collect())
+}
+
+/// SC-3b: the tasks that finished and show as done (`firstmate::status::is_done`) between `from` and `to` (epoch ms, by
+/// when they settled), NEWEST first, at most `ACCEPTED_WINDOW_MAX` (a window with more keeps the newest, which are the
+/// ones the newest commits hold). `keep` says whether a row's project is the one the caller wants: it reads the project
+/// text as stored, so the caller compares it the way it compares paths. A followed brief is a message to a Lead, not a
+/// task, and never counts. The ship check reads their briefs as the definition of done for the commits between two ship
+/// checks. Only the light columns are read for every row in the window; the text of a brief is loaded for the ones kept.
+pub fn accepted_in_window(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+    mut keep: impl FnMut(&str) -> bool,
+) -> Result<Vec<Delegation>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, project, state, gate_verdict FROM delegations
+             WHERE follow IS NULL AND state = 'completed' AND project IS NOT NULL
+               AND settled_at IS NOT NULL AND settled_at >= ?1 AND settled_at <= ?2
+             ORDER BY settled_at DESC, rowid DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (id, project, state, gate) in rows {
+        if out.len() >= ACCEPTED_WINDOW_MAX {
+            break;
+        }
+        if !crate::firstmate::status::is_done(&state, gate.as_deref()) || !keep(&project) {
+            continue;
+        }
+        if let Some(row) = get(conn, &id)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+/// The most tasks `accepted_in_window` returns.
+pub const ACCEPTED_WINDOW_MAX: usize = 200;
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedQuery {
@@ -1487,6 +1861,22 @@ pub fn owned(conn: &Connection, input: OwnedQuery) -> Result<Vec<Delegation>, St
             }
         }
     }
+    Ok(rows)
+}
+
+/// SC-7: the most rows `of_owner` reads.
+const OF_OWNER_MAX: i64 = 200;
+
+/// SC-7: every row one chat owns, in any state, oldest first, the newest `OF_OWNER_MAX` of them. The hold on a first mate's
+/// "done" reads what is still open among them (firstmate/open_work.rs). Only that chat's rows: a blank id is refused.
+pub fn of_owner(conn: &Connection, owner_session: &str) -> Result<Vec<Delegation>, String> {
+    let owner = session_id(owner_session, "owner session")?;
+    let mut rows = query(
+        conn,
+        "WHERE owner_session = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+        &[&owner, &OF_OWNER_MAX],
+    )?;
+    rows.reverse();
     Ok(rows)
 }
 
@@ -1770,6 +2160,24 @@ pub fn delegations_settle(
     Ok(change)
 }
 
+/// WP-157: one work log line when checks send this work back.
+#[tauri::command(async)]
+pub fn delegations_sent_back(
+    store: State<'_, SessionStore>,
+    id: String,
+    rework: i64,
+    report: Option<String>,
+) -> Result<bool, String> {
+    Ok(sent_back(
+        &mut *store.lock_conn()?,
+        &id,
+        rework,
+        report.as_deref().unwrap_or(""),
+        now_millis(),
+    )?
+    .is_some())
+}
+
 #[tauri::command(async)]
 pub fn delegations_reattach(
     app: AppHandle,
@@ -1983,6 +2391,34 @@ mod tests {
     }
 
     #[test]
+    fn a_pick_reason_is_kept_on_the_recorded_line_as_one_plain_line() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut input = launch("mono-exo", "app-mono-exo-why", "app-mono-exo-why");
+        input.pick_reason = Some(
+            "  Grok is on Never use, so it was skipped.\nBuilder role prefers Codex.  ".into(),
+        );
+        let row = record(&mut conn, input, 10).unwrap();
+        let why = row.log[0].get("why").and_then(Value::as_str);
+        assert_eq!(
+            why,
+            Some("Grok is on Never use, so it was skipped. Builder role prefers Codex.")
+        );
+        let mut long = launch("mono-exo", "app-mono-exo-long", "app-mono-exo-long");
+        long.pick_reason = Some("x".repeat(400));
+        let row = record(&mut conn, long, 11).unwrap();
+        let kept = row.log[0].get("why").and_then(Value::as_str).unwrap_or("");
+        assert!(kept.chars().count() <= 240, "a reason is capped");
+        let mut blank = launch("mono-exo", "app-mono-exo-blank", "app-mono-exo-blank");
+        blank.pick_reason = Some("   ".into());
+        let row = record(&mut conn, blank, 12).unwrap();
+        assert!(
+            row.log[0].get("why").is_none(),
+            "an empty reason is not written"
+        );
+    }
+
+    #[test]
     fn a_recorded_delegation_is_running_owed_and_idempotent_by_request() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
@@ -2028,6 +2464,53 @@ mod tests {
         let mut ok = launch("mono", "r", "c");
         ok.ask_ids = vec!["a_good1".into()];
         assert_eq!(record(&mut conn, ok, 1).unwrap().ask_ids, vec!["a_good1"]);
+    }
+
+    #[test]
+    fn record_takes_ledger_ask_ids_and_still_takes_the_old_ones() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        // What the ask ledger's `asks.list` gives as `id` (src/features/asks/model/asks.ts askId), beside an old Ash OS id.
+        let mut both = launch("mono", "r1", "c1");
+        both.ask_ids = vec![
+            "ask-5-abc123def456".into(),
+            "ask-12-".into(),
+            "a_old1".into(),
+        ];
+        assert_eq!(
+            record(&mut conn, both, 1).unwrap().ask_ids,
+            vec!["ask-5-abc123def456", "ask-12-", "a_old1"],
+            "both shapes are stored as given, so a job's end can find its ask"
+        );
+        // Anything else is refused, and one bad id refuses the whole copy.
+        for bad in [
+            "ask-",
+            "ask-x-abc",
+            "ask--abc",
+            "ask-5",
+            "ask-5-abc-def",
+            "ask-5-abc def",
+            "ask-5-abcdefghijklm",
+            "ask-1234567890-abc",
+            "Ask-5-abc",
+            "ask-5-ünï",
+            "ask-5-../x",
+            "a_",
+            "",
+        ] {
+            let mut input = launch("mono", "r2", "c2");
+            input.ask_ids = vec!["ask-5-abc".into(), bad.into()];
+            assert!(
+                record(&mut conn, input, 1).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let mut too_many = launch("mono", "r3", "c3");
+        too_many.ask_ids = (0..=ASKS_MAX).map(|n| format!("ask-{n}-abc")).collect();
+        assert!(
+            record(&mut conn, too_many, 1).is_err(),
+            "more than 50 ask ids is refused"
+        );
     }
 
     #[test]
@@ -2474,6 +2957,24 @@ mod tests {
         );
     }
 
+    /// The same owner and request id get the row already there back, even one the owner cancelled, so a restart that
+    /// wants a worker of its own must send a new request id (WP-172: fanoutCheckpoint.ts resume, confirm).
+    #[test]
+    fn a_cancelled_request_comes_back_as_the_same_row_so_a_restart_needs_a_new_request_id() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
+        let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.state.as_str()),
+            (first.id.as_str(), CANCELLED)
+        );
+        let restarted = record(&mut conn, launch("mono", "req-x-r2", "child-x"), 13).unwrap();
+        assert_ne!(restarted.id, first.id);
+        assert_eq!(restarted.state, RUNNING);
+    }
+
     /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.
     #[test]
     fn a_row_taken_over_drops_its_waiting_question() {
@@ -2850,6 +3351,69 @@ mod tests {
     }
 
     #[test]
+    fn a_redo_is_linked_in_its_own_record_and_refused_without_its_parent() {
+        // Round 5 HIGH-1: the link is written with the new row, so the chat's first turn already sees it. A parent that
+        // is not the owner's refuses the record, and a retried record cannot move the link to another parent.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "worker-old"), 10).unwrap();
+        let other = record(&mut conn, launch("lead", "r9", "worker-other"), 11).unwrap();
+        let redo = RecordInput {
+            redoes: Some(old.id.clone()),
+            ..launch("lead", "r2", "worker-new")
+        };
+        let created = record(&mut conn, redo.clone(), 20).unwrap();
+        assert_eq!(
+            redo_links(&conn).unwrap(),
+            vec![RedoLink {
+                child: "worker-new".into(),
+                parent: "worker-old".into()
+            }],
+            "linked by the record itself, before any turn"
+        );
+        // A retry of the same request, naming another parent, keeps the first link.
+        let retry = RecordInput {
+            redoes: Some(other.id.clone()),
+            ..launch("lead", "r2", "worker-new")
+        };
+        record(&mut conn, retry, 25).unwrap();
+        assert_eq!(redo_links(&conn).unwrap().len(), 1);
+        assert_eq!(redo_links(&conn).unwrap()[0].parent, "worker-old");
+        // A parent of someone else's is refused, and no row is created for it.
+        let stranger = RecordInput {
+            redoes: Some(old.id.clone()),
+            ..launch("someone-else", "r3", "worker-x")
+        };
+        assert!(record(&mut conn, stranger, 30).is_err());
+        assert!(get(&conn, &created.id).unwrap().is_some());
+        assert!(query(&conn, "WHERE request_id = ?1", &[&"r3"])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_redo_links_its_new_chat_to_the_one_it_redid() {
+        // Round 4 M-1: the redo the owner names is kept on the new chat's row, so the spend gate can count the redo
+        // against its parent's ceiling after a restart. Through the real record and redo path.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "worker-old"), 10).unwrap();
+        let new = record(&mut conn, launch("lead", "r2", "worker-new"), 20).unwrap();
+        assert!(redo_links(&conn).unwrap().is_empty(), "no redo, no link");
+        note_redo(&mut conn, "lead", &old.id, &new.id, 30).unwrap();
+        assert_eq!(
+            redo_links(&conn).unwrap(),
+            vec![RedoLink {
+                child: "worker-new".into(),
+                parent: "worker-old".into()
+            }]
+        );
+        // A task of someone else's is refused, and links nothing.
+        assert!(note_redo(&mut conn, "someone-else", &old.id, &new.id, 40).is_err());
+        assert_eq!(redo_links(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
     fn the_same_stall_with_a_new_reason_is_written() {
         // The hourly progress check's second stuck hour: still a loop, but its line says what changed.
         let store = store();
@@ -3003,6 +3567,38 @@ mod tests {
             get(&conn, &row.id).unwrap().unwrap().follow.as_deref(),
             Some("lead")
         );
+    }
+
+    #[test]
+    fn an_older_store_gets_the_brief_columns_once_and_keeps_its_rows() {
+        // SC-4: brief_stamp, brief_checks and brief_leave are added to a store from before, and a second pass adds nothing.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE delegations (id TEXT PRIMARY KEY, owner_session TEXT NOT NULL, owner_mono TEXT, batch_id TEXT,
+               parent_id TEXT, root_id TEXT NOT NULL, child_session TEXT NOT NULL, request_id TEXT NOT NULL,
+               generation INTEGER NOT NULL DEFAULT 1, project TEXT, title TEXT, brief TEXT, goal TEXT,
+               ask_ids TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, error_class TEXT, error TEXT, retryable INTEGER,
+               resets_at INTEGER, result TEXT, pending_question TEXT, delivery TEXT NOT NULL, delivery_message TEXT,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, settled_at INTEGER,
+               log TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1,
+               mirrored_version INTEGER NOT NULL DEFAULT 0, mirror_error TEXT, UNIQUE (owner_session, request_id));
+             INSERT INTO delegations (id, owner_session, root_id, child_session, request_id, state, delivery, created_at, updated_at)
+               VALUES ('d-old', 'lead', 'd-old', 'w', 'r', 'running', 'pending', 1, 1);",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        let (stamp, checks, leave): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT brief_stamp, brief_checks, brief_leave FROM delegations WHERE id = 'd-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((stamp, checks, leave), (None, None, None));
+        // A row from before reads as a brief with no lines, no list and no stamp.
+        let state = crate::firstmate::brief_checks::state_of(&conn, "d-old").unwrap();
+        assert_eq!(state, crate::firstmate::brief_checks::BriefState::default());
     }
 
     #[test]
@@ -3293,5 +3889,148 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DELIVERED);
+    }
+}
+
+/// WP-203: a cancelled or failed review row becomes a new attempt. It runs again under a new generation, so a settle
+/// from the old attempt is refused as stale. Only the app's review row can be reopened here.
+pub(crate) fn reopen_review(
+    conn: &mut Connection,
+    id: &str,
+    now: i64,
+) -> Result<Delegation, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut row = get(&tx, id)?.ok_or("no such review")?;
+    if row.owner_session != crate::delivery::review::OWNER {
+        return Err("only the app's review can be reopened".into());
+    }
+    if row.state == CANCELLED || row.state == FAILED {
+        row.state = RUNNING.into();
+        row.generation += 1;
+        row.delivery = PENDING.into();
+        row.delivery_message = None;
+        row.error = None;
+        row.error_class = None;
+        row.result = None;
+        row.settled_at = None;
+        row.run_started_at = now;
+        row.note(
+            now,
+            "app",
+            "retried",
+            json!({ "generation": row.generation }),
+        );
+        row.touch(now);
+        save_row(&tx, &row)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+/// WP-203: the review owner is the app's alone, on every entry that records a delegation or lists one for a caller.
+#[cfg(test)]
+mod review_guard_tests {
+    use super::*;
+    use crate::delivery::review::{request_id, OWNER};
+
+    fn store() -> SessionStore {
+        SessionStore::open_in_memory().unwrap()
+    }
+
+    fn input(owner: &str, request: &str) -> RecordInput {
+        RecordInput {
+            owner_session: owner.into(),
+            request_id: request.into(),
+            child_session: "child-1".into(),
+            ..Default::default()
+        }
+    }
+
+    fn launcher(request: &str) -> RecordInput {
+        RecordInput {
+            review_launch: true,
+            ..input(OWNER, request)
+        }
+    }
+
+    const HEAD: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+
+    // Entry: the record command (delegations_record). delegate_task, delegate_tasks, the MCP tools and the control
+    // socket's tasks.* actions all reach it through the app's TypeScript layer, with the caller's own session as owner.
+    #[test]
+    fn a_caller_cannot_record_under_the_review_owner() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let err = record(&mut conn, input(OWNER, "agent-request-1"), 10).unwrap_err();
+        assert!(err.contains("review launcher"), "{err}");
+    }
+
+    #[test]
+    fn a_caller_cannot_record_a_review_request_under_its_own_owner() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        assert!(record(&mut conn, input("claude-session", &id), 10).is_err());
+    }
+
+    // Entry: the command's JSON. A caller can't claim the launcher's flag.
+    #[test]
+    fn the_launcher_flag_cannot_come_from_json() {
+        let parsed: RecordInput = serde_json::from_value(json!({
+            "ownerSession": OWNER,
+            "requestId": request_id("acme/web", 7, HEAD, "claude"),
+            "childSession": "child-1",
+            "reviewLaunch": true,
+        }))
+        .unwrap();
+        assert!(!parsed.review_launch);
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        assert!(record(&mut conn, parsed, 10).is_err());
+    }
+
+    #[test]
+    fn the_launcher_records_its_own_review_and_no_one_else_can() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        let row = record(&mut conn, launcher(&id), 10).unwrap();
+        assert_eq!(row.owner_session, OWNER);
+        // The launcher's flag names a review request only: it can't record an ordinary request under the review owner.
+        assert!(record(&mut conn, launcher("ordinary-request"), 11).is_err());
+    }
+
+    // Entry: the listing a caller reads for its own rows (owned). A review row never appears under a caller's session.
+    #[test]
+    fn a_callers_listing_never_shows_a_review_row() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        record(&mut conn, launcher(&id), 10).unwrap();
+        let listed = owned(
+            &conn,
+            OwnedQuery {
+                owner_session: "claude-session".into(),
+                ids: Vec::new(),
+                request_ids: vec![id.clone()],
+            },
+        )
+        .unwrap();
+        assert!(
+            listed.is_empty(),
+            "a caller listed a review row: {listed:?}"
+        );
+        let by_owner = owned(
+            &conn,
+            OwnedQuery {
+                owner_session: OWNER.into(),
+                ids: Vec::new(),
+                request_ids: vec![id],
+            },
+        )
+        .unwrap();
+        assert_eq!(by_owner.len(), 1, "the app still sees its own review row");
     }
 }

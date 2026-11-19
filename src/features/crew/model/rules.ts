@@ -1,4 +1,5 @@
 import { isCli, isEffort } from "./clis";
+import { dollarsOrBad, parseDollars } from "../../usage/model/money";
 
 /** One ordered rule. A plugin's rules sit under the person's and are not editable here. */
 export type CrewRule = {
@@ -7,6 +8,8 @@ export type CrewRule = {
   cli?: string;
   model?: string;
   effort?: string;
+  /** WP-176. Measured-cost cap for a billed run, in dollars. Off when omitted. A plugin cannot set one. */
+  taskCeilingUsd?: number;
   source: "person" | "plugin";
 };
 
@@ -16,6 +19,8 @@ export type RuleDraft = {
   cli: string;
   model: string;
   effort: string;
+  /** Blank means no ceiling. A number of dollars when set. */
+  ceiling?: string;
 };
 
 const MAX_RULES = 40;
@@ -63,6 +68,13 @@ function cleanModel(value: string | undefined): string | undefined {
   return text;
 }
 
+/** A blank ceiling is off. Anything else is a positive dollar amount, or refused. */
+export function parseCeilingUsd(text: string): number | null | "bad" {
+  return parseDollars(text);
+}
+
+const ceilingUsd = dollarsOrBad;
+
 /** A stored or imported rule is untrusted. A broken one is dropped, not thrown. */
 export function sanitizeRule(value: unknown, source: CrewRule["source"]): CrewRule | null {
   if (!value || typeof value !== "object") return null;
@@ -74,7 +86,14 @@ export function sanitizeRule(value: unknown, source: CrewRule["source"]): CrewRu
   const effort = typeof raw.effort === "string" && isEffort(raw.effort.trim()) ? raw.effort.trim() : undefined;
   const model = cleanModel(typeof raw.model === "string" ? raw.model : undefined);
   if (!cli && !model && !effort) return null;
-  return { labels, paths, cli, model, effort, source };
+  let taskCeilingUsd: number | undefined;
+  if (raw.taskCeilingUsd != null && source !== "plugin") {
+    if (typeof raw.taskCeilingUsd !== "number") return null;
+    const ceiling = ceilingUsd(raw.taskCeilingUsd);
+    if (ceiling === "bad") return null;
+    taskCeilingUsd = ceiling;
+  }
+  return { labels, paths, cli, model, effort, ...(taskCeilingUsd != null ? { taskCeilingUsd } : {}), source };
 }
 
 /** What the editor is willing to add. A sentence when it isn't a rule yet. */
@@ -89,14 +108,29 @@ export function draftRule(draft: RuleDraft): CrewRule | string {
   if (effort && !isEffort(effort)) return "That isn't an effort level.";
   if (draft.model.trim() && !model) return "The model has to be one line.";
   if (!cli && !model && !effort) return "Pick a CLI, a model or an effort.";
+  const ceiling = parseCeilingUsd(draft.ceiling ?? "");
+  if (ceiling === "bad") return "The task ceiling has to be a positive amount.";
   return {
     labels,
     paths,
     cli: cli || undefined,
     model,
     effort: effort || undefined,
+    ...(ceiling != null ? { taskCeilingUsd: ceiling } : {}),
     source: "person",
   };
+}
+
+/** The lowest ceiling a person's rules set. A plugin rule cannot set one. None means leave the project alone. */
+export function taskCeilingFromRules(rules: readonly CrewRule[]): number | null {
+  let lowest: number | null = null;
+  for (const rule of rules) {
+    if (rule.source === "plugin" || rule.taskCeilingUsd == null) continue;
+    const ceiling = ceilingUsd(rule.taskCeilingUsd);
+    if (ceiling === "bad") continue;
+    if (lowest == null || ceiling < lowest) lowest = ceiling;
+  }
+  return lowest;
 }
 
 /**

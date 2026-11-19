@@ -23,6 +23,7 @@ import {
 import { leadActionLine, stuckMinutes, type StuckWorker } from "../model/workerStuck";
 import { plainStuckLine, stuckWorkerChip } from "../model/stuckChip";
 import { ChipMark, NeedsYouLinkLine, redRowProps } from "../../hub/ui/StatusMark";
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { foldStopped, stoppedLine } from "../model/stuckFold";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
@@ -306,9 +307,9 @@ export function StuckWorkerCard({
         ) : null}
         {/* Critiquito, Ash's call (r51): no "Open <Lead>'s chat" on a grey card; a red one has it under its reason. */}
         {stuck.kind === "failed" ? (
-          <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
+          <SecondaryButton data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
             Dismiss
-          </button>
+          </SecondaryButton>
         ) : null}
       </div>
       {/* Then Ash's own words, full width: a field that reads as a field, Send, and a quieter Stop set apart. */}

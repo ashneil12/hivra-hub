@@ -64,11 +64,11 @@ const hubItems = () => createElement("div", { "data-probe-hub-items": "" });
 const shownHubItems = () => container.querySelectorAll("[data-probe-hub-items]").length;
 
 describe("the Hub in the new layout", () => {
-  it("lists Pages with the other views, marks it open, and opens it", () => {
+  it("lists Hubs with the other views, marks it open, and opens it", () => {
     const onOpenPages = vi.fn();
     sidebar({ inset: true, onOpenAutomations: vi.fn(), onOpenPages, pagesActive: true });
     const labels = views().map((button) => button.getAttribute("aria-label"));
-    expect(labels).toEqual(["Automations", "Pages"]);
+    expect(labels).toEqual(["Automations", "Hubs"]);
     const pages = views()[1];
     expect(pages.className).toContain("bg-selection");
     act(() => pages.click());

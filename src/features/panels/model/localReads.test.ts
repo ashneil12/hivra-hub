@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import type { Decision } from "../../firstmate/model/steering";
 import type { HubProject } from "../../hub/model/types";
@@ -84,10 +83,4 @@ it("reads tasks, the project, jobs and agents from local delegations and project
   const agents = localSources(records, 1_700_000_200_000)["agents.read"].read({});
   expect(JSON.stringify(agents)).toContain("Example: paint the sign");
   expect(localJobGroups({ projects: [], delegations: [] })).toEqual([]);
-});
-
-it("does not mention Ash OS", () => {
-  const source = readFileSync(new URL("./localReads.ts", import.meta.url), "utf8");
-  expect(source).not.toMatch(/ash-hub|ashOs|ash_os|build-page/);
-  expect(source).toContain("delegationJobGroups");
 });

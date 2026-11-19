@@ -44,7 +44,8 @@ function norm(value: string): string {
 
 /** A catalog name, without a leading "Claude " so the line says "Sonnet". */
 export function modelDisplay(model: CatalogModel): string {
-  return (model.name || model.id).replace(/^Claude\s+/i, "");
+  // Ash 12 Nov: "Opus alias" says nothing; the name alone does.
+  return (model.name || model.id).replace(/^Claude\s+/i, "").replace(/\s*[(\[]?\balias\b[)\]]?/gi, "").trim() || model.id;
 }
 
 function joinAnd(items: readonly string[]): string {
@@ -260,6 +261,8 @@ export function describeInForce(input: {
   defaults?: RouteDefaults;
   catalog: Catalog;
   rules?: readonly CrewRule[];
+  /** WP-141: the lock and the Never use list in force, named in the sentence when either is on. */
+  policy?: { lockDefault?: boolean; neverUse?: readonly string[] };
 }): InForce {
   const route: Route = resolveRoute(
     { labels: [], paths: [] },
@@ -267,11 +270,25 @@ export function describeInForce(input: {
     [],
     { defaults: input.defaults, catalog: input.catalog },
   );
-  return { sentence: sentenceFor(route, input.catalog), route };
+  const parts = [sentenceFor(route, input.catalog), policySentence(input.policy)].filter(Boolean);
+  return { sentence: parts.join(" "), route };
+}
+
+/** WP-141 L9: the lock and the Never use list, in words. Empty when neither is on. */
+function policySentence(policy: { lockDefault?: boolean; neverUse?: readonly string[] } | undefined): string {
+  const lock = policy?.lockDefault === true ? "Always use my default is on, so a chat can't change it." : "";
+  const never = (policy?.neverUse ?? []).map((cli) => cliLabel(cli));
+  const banned = never.length ? `Never use: ${never.join(" and ")}.` : "";
+  return [lock, banned].filter(Boolean).join(" ");
 }
 
 /** One sentence of what a worker uses, and where each field came from. */
-export function inForceSentence(input: { defaults?: RouteDefaults; catalog: Catalog; rules?: readonly CrewRule[] }): string {
+export function inForceSentence(input: {
+  defaults?: RouteDefaults;
+  catalog: Catalog;
+  rules?: readonly CrewRule[];
+  policy?: { lockDefault?: boolean; neverUse?: readonly string[] };
+}): string {
   return describeInForce(input).sentence;
 }
 

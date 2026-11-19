@@ -14,7 +14,7 @@ import {
 import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
 import { useDelegationPane } from "../hooks/useDelegationPane";
 import { DelegationBatchRow } from "./DelegationBatchRow";
-import { enqueueWorker, queuedWorkers, resetWorkerPool } from "../model/workerPool";
+import { enqueueWorker, queuedWorkers, resetWorkerPool, setQueueDependency, workerPoolHost, declareFiles, setWorkerLimits } from "../model/workerPool";
 import {
   DelegatedChatNotice,
   DelegationWaitingLine,
@@ -218,16 +218,62 @@ describe("a worker waiting for a free worker (H8)", () => {
       );
     act(render);
     expect(container.querySelector("[data-delegation-rollup]")?.textContent).toBe(
-      "Delegated 2: 1 working, 1 waiting for a free worker",
+      "Delegated 2: 1 working, 1 waiting to start",
     );
     const card = container.querySelector<HTMLButtonElement>('[data-launched-session="w2"]')!;
     expect(card.dataset.state).toBe("waiting");
-    expect(card.textContent).toContain("Waiting for a free worker");
+    expect(card.textContent).toContain("Waiting to start");
     // Nothing to open yet.
     expect(card.disabled).toBe(true);
     await act(async () => container.querySelector<HTMLButtonElement>('[data-delegation-unqueue="w2"]')!.click());
     expect(queuedWorkers()).toEqual([]);
     expect(container.querySelector('[data-delegation-unqueue="w2"]')).toBeNull();
+  });
+
+  it("says a held task is waiting for another task, and a worker-limit wait stays a free worker", async () => {
+    localStorage.clear();
+    resetWorkerPool();
+    setQueueDependency(({ fanout }) =>
+      (fanout as { for?: string }).for === "held"
+        ? { reason: "held", line: "Held: api failed." }
+        : (fanout as { for?: string }).for === "needs"
+          ? { reason: "requires", line: "Waiting for api to finish and be checked." }
+          : undefined,
+    );
+    const waiting = (id: string, title: string, fanout?: string) =>
+      enqueueWorker({
+        id,
+        ownerSession: "lead-chat",
+        requestId: id,
+        project: "vg-game",
+        projectName: "vg-game",
+        title,
+        heavy: false,
+        harness: "claude",
+        queuedAt: 1,
+        input: fanout ? { brief: title, fanout: { for: fanout } } : { brief: title },
+      });
+    await waiting("w-held", "Ship the board", "held");
+    await waiting("w-needs", "Write the notes", "needs");
+    await waiting("w-free", "Fix audio");
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w-held", "Ship the board"), launch("w-needs", "Write the notes"), launch("w-free", "Fix audio")],
+        }),
+      ),
+    );
+    const text = (id: string) => container.querySelector(`[data-launched-session="${id}"]`)!;
+    expect(text("w-held").textContent).toContain("Waiting for another task");
+    expect(text("w-held").textContent).not.toContain("Waiting to start");
+    expect(text("w-held").getAttribute("aria-label")).toMatch(/waiting for another task/i);
+    expect(text("w-needs").textContent).toContain("Waiting for another task");
+    expect(text("w-free").textContent).toContain("Waiting to start");
+    expect(text("w-free").textContent).not.toContain("Waiting for another task");
+    // The counted line still uses the waiting state. Only the card's own label changes.
+    expect(container.querySelector("[data-delegation-rollup]")?.textContent).toBe(
+      "Delegated 3: 3 waiting to start",
+    );
   });
 });
 
@@ -434,4 +480,20 @@ describe("a Lead's Stop all whose workers couldn't be loaded", () => {
       "Couldn't load the workers under Job w1; they may still be running",
     );
   });
+});
+
+it("shows the file collision explanation rather than inventing a one-worker limit", async () => {
+  resetWorkerPool();
+  setWorkerLimits("vg-game", { workers: 6, heavy: 6 });
+  const active = { ...row("example-active", "example-worker", "running"), project: "vg-game", title: "Example: streaming" };
+  setDelegationRows([active]);
+  declareFiles("example-worker", ["src/example.ts"]);
+  workerPoolHost({ openRows: () => [active], room: () => ({ room: true }) });
+  await enqueueWorker({ id: "example-queued", ownerSession: "lead-chat", requestId: "example-queued", project: "vg-game", projectName: "Example", title: "Example: asks", heavy: false, harness: "claude", queuedAt: 1, input: {}, files: ["src/example.ts"] });
+  act(() => root.render(createElement(DelegationBatchRow, { launches: [launch("example-queued", "Example: asks")] })));
+  const card = container.querySelector('[data-launched-session="example-queued"]')!;
+  expect(card.textContent).toContain('both change src/example.ts');
+  expect(card.textContent).not.toContain('free worker');
+  expect(card.textContent).not.toContain('one at a time');
+  resetWorkerPool();
 });

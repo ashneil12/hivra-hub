@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { openLocalHub } from "./localHub";
-import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
+import { assertStarterTicks, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
 // - Ash 21 Oct, width: Pages and the project's coding team (WP-06: that chat replaced Today)
@@ -51,7 +51,7 @@ for (const size of SIZES) {
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${SHOTS}/pm-19-coding-team-${size.name}.png` });
 
-    await page.getByRole("button", { name: /^Pages/ }).first().click();
+    await page.getByRole("button", { name: /^Hubs/ }).first().click();
     // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
     // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
     await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
@@ -59,7 +59,7 @@ for (const size of SIZES) {
     // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
   // build here, as in agents-page, so the preview it draws is what this checks.
   await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
-  await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
+  await page.getByLabel("Describe the hub").fill("plan my week, with a calendar");
     await page.getByLabel("Send to a Mono").click();
     await expect(page.locator("[data-block-calendar]").first()).toBeVisible({ timeout: 30_000 });
     const p = await fill(page, "[data-pages-preview], [data-pages-open]");
@@ -78,12 +78,12 @@ test("fresh install onboarding: our team with a role line under each name, and n
   await openOnboarding(page);
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.locator("[data-hub-onboarding-next]").click();
-  await assertStartersUnticked(page);
+  await assertStarterTicks(page);
   const text = () => page.evaluate(() => document.body.innerText);
-  await expect.poll(text).toMatch(/None are added unless you tick them/);
+  await expect.poll(text).toMatch(/Only ticked ones are added/);
   const body = await text();
   for (const [name, role] of [
-    ["Coordinator", "The first mono you talk to about work."],
+    ["Chief of Staff", "The first mono you talk to about work."],
     ["Planner", "Keeps the board: owner, state, evidence."],
     ["Record keeper", "Checks plans against what was said."],
     ["Team steward", "One owner for each job. No spare seats."],

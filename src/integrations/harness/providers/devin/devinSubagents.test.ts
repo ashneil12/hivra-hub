@@ -268,4 +268,16 @@ describe("Devin subagents", () => {
       ),
     ).toBe("");
   });
+
+  it("counts a started agent until it completes, and not a spawn with no agent id", () => {
+    const devin = new DevinSubagents();
+    const params = (update: Record<string, unknown>) => ({ sessionId: "s", update });
+    devin.translate(params(run("call_b", "Legacy", "Old CLI.")), []);
+    devin.translate(params(runStatus("call_b", "completed")), []);
+    expect(devin.hasRunning()).toBe(false);
+    devin.translate(params(started("a9", "Resumed audit", "Continue.")), []);
+    expect(devin.hasRunning()).toBe(true);
+    devin.translate(params(completed("a9", true, "Done.")), []);
+    expect(devin.hasRunning()).toBe(false);
+  });
 });

@@ -52,6 +52,19 @@ test("CLAUDE.md adds only Claude Code's part", () => {
   }
 });
 
+test("Claude Code lists the skills every agent shares", () => {
+  // Claude Code reads project skills only from .claude/skills. Until 12 Nov 2026 the skills sat in .agents/skills
+  // alone, so no Claude session listed dropwave-ui and a new Settings screen was built without it.
+  const link = path.join(root, ".claude", "skills");
+  assert.ok(fs.lstatSync(link).isSymbolicLink(), ".claude/skills must stay a link, not a copy that drifts");
+  assert.equal(fs.readlinkSync(link), "../.agents/skills");
+  for (const skill of ["dropwave-ui", "make-a-hub"]) {
+    const text = fs.readFileSync(path.join(link, skill, "SKILL.md"), "utf8");
+    assert.match(text, new RegExp(`^---\\nname: ${skill}\\ndescription: .+`), `${skill} lost its name or description`);
+  }
+  assert.match(read("AGENTS.md"), /`dropwave-ui` skill in `\.agents\/skills\/`/);
+});
+
 test("the shipped dev copy keeps its Claude hooks", () => {
   // The Claude-only text that left AGENTS.md must still be in CLAUDE.md, not lost in the move.
   assert.match(read("CLAUDE.md"), /~\/\.monocode-hub-dev\/claude-config/);

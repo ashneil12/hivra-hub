@@ -251,8 +251,62 @@ pub fn announce(app: &AppHandle, ids: &[String]) {
     }
 }
 
+/// Pushes one commit. The guard runs here, not only at the caller, and the push sends the sha it just checked.
+/// `--set-upstream` does not record the upstream when the refspec is `<sha>:refs/heads/<branch>`, so the branch is
+/// pointed at the remote afterwards. The commit-graph and pack bitmaps stay off: either can name a tree the guard
+/// did not read.
+pub(crate) fn push_sha(
+    checkout: &Path,
+    remote: &str,
+    branch: &str,
+    sha: &str,
+) -> Result<(), String> {
+    let checked = crate::commit_guard::gate_outgoing_to(checkout, remote)?;
+    if checked.sha != sha {
+        return Err("The commit that was checked is no longer HEAD, so nothing was sent.".into());
+    }
+    if checked.urls.is_empty() {
+        return Err(format!("the remote {remote} has no push URL"));
+    }
+    let refspec = format!("{sha}:refs/heads/{branch}");
+    // The URLs are the ones the gate just resolved. Naming the remote would read pushurl again, and that
+    // value can change after the check. `--set-upstream` cannot be used with a URL.
+    for url in &checked.urls {
+        git(
+            checkout,
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+                url,
+                &refspec,
+            ],
+        )?;
+    }
+    // The push has already landed. A raw URL does not move the remote-tracking ref, so write the one the
+    // fetch refspec maps and then point the branch at the remote by name. That second step fails when the
+    // refspec does not map the branch. That is not a failed push.
+    let tracking = format!("--set-upstream-to={remote}/{branch}");
+    let specs = git(
+        checkout,
+        &["config", "--get-all", &format!("remote.{remote}.fetch")],
+    )
+    .unwrap_or_default();
+    for dst in crate::commit_guard::remote_tracking_refs(&specs, branch) {
+        let _ = git(checkout, &["update-ref", &dst, sha]);
+    }
+    if let Err(error) = git(checkout, &["branch", &tracking, branch]) {
+        eprintln!("git push landed, but the upstream was not recorded: {error}");
+    }
+    Ok(())
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = super::child("git")
+    let out = crate::git_cmd::child()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -480,6 +534,11 @@ pub fn deliver(
             .find(|row| &row.id == id),
         None => None,
     };
+    // WP-249: what is delivered must be the files the crew's verdict judged; a later change voids it.
+    if let Some(id) = &input.delegation_id {
+        let newest = crate::firstmate::gates::records_of(&*store.lock_conn()?, id)?.pop();
+        crate::firstmate::gates::verdict_tree_holds(newest.as_ref(), Some(&checkout))?;
+    }
     if let Some(row) = &row {
         input.brief = input.brief.or_else(|| row.brief.clone());
         input.report = input.report.or_else(|| row.result.clone());
@@ -616,6 +675,9 @@ pub fn deliver(
                     .chars()
                     .take(200)
                     .collect();
+                // WP-200: the checked branch pushes and opens the pull request itself, so the guard runs first.
+                crate::commit_guard::gate_outgoing_to(&checkout, &remote)
+                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
                 let filled = crate::delivery_gate::fill(
                     store,
                     crate::delivery_gate::FillInput {
@@ -663,16 +725,11 @@ pub fn deliver(
                 .into();
                 delivery.detail = filled.detail;
             } else {
-                git(
-                    &checkout,
-                    &[
-                        "push",
-                        "--set-upstream",
-                        &remote,
-                        &format!("HEAD:refs/heads/{branch}"),
-                    ],
-                )
-                .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
+                let sha = crate::commit_guard::gate_outgoing_to(&checkout, &remote)
+                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?
+                    .sha;
+                push_sha(&checkout, &remote, &branch, &sha)
+                    .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
                 // WP-78: the push landed. A pull request that fails afterwards does not undo this line.
                 if let Ok(conn) = store.lock_conn() {
                     crate::activity::note(
@@ -708,6 +765,7 @@ pub fn deliver(
                     .chars()
                     .take(200)
                     .collect();
+                crate::commit_guard::gate_outgoing_to(&checkout, &remote)?;
                 let created = gh.run(
                     Some(&checkout),
                     &[
@@ -783,7 +841,20 @@ pub fn deliver(
             }
         }
     }
-    insert(&*store.lock_conn()?, &delivery)?;
+    let conn = store.lock_conn()?;
+    insert(&conn, &delivery)?;
+    // WP-203: the author is the engine of the work's own session (sessions.harness), read here, never from the caller.
+    if let Some(author) = match &input.delegation_id {
+        Some(id) => super::review::author_for_delegation(&conn, id)?,
+        None => None,
+    } {
+        conn.execute(
+            "UPDATE work_deliveries SET author = ?1 WHERE id = ?2",
+            rusqlite::params![author, delivery.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    drop(conn);
     if gated {
         let marked = {
             let conn = store.lock_conn()?;

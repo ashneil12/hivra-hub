@@ -23,6 +23,12 @@ type Spawn = {
 export class DevinSubagents {
   private spawns = new Map<string, Spawn>();
   private agents = new Map<string, string>();
+  /** Agent ids that have started and not completed. A spawn with no id is not here. */
+  private running = new Set<string>();
+
+  hasRunning(): boolean {
+    return this.running.size > 0;
+  }
 
   /** Params with Devin's parent identity rewritten, and the events to route. */
   translate(
@@ -37,6 +43,7 @@ export class DevinSubagents {
     const started = asRecord(meta["cognition.ai/subagent_started"]);
     const startedId = field(started, "agentId");
     if (started && startedId) {
+      this.running.add(startedId);
       const callId = this.link(startedId, started);
       const spawn = this.spawns.get(callId);
       const title = field(started, "title") ?? spawn?.title;
@@ -52,6 +59,7 @@ export class DevinSubagents {
     const completed = asRecord(meta["cognition.ai/subagent_completed"]);
     const completedId = field(completed, "agentId");
     if (completed && completedId) {
+      this.running.delete(completedId);
       const callId = this.agents.get(completedId) ?? completedId;
       const spawn = this.spawns.get(callId);
       if (spawn) spawn.settled = true;

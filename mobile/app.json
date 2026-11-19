@@ -1,26 +1,26 @@
 {
   "expo": {
-    "name": "MonoCode",
-    "slug": "monocode-mobile",
-    "owner": "hardbeat920",
+    "name": "Hivra",
+    "slug": "hivra-mobile",
     "version": "1.0.0",
     "runtimeVersion": {
       "policy": "fingerprint"
     },
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "monocode",
+    "scheme": "hivra",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/app.icon",
-      "bundleIdentifier": "com.hardbeat920.monocode-mobile",
+      "bundleIdentifier": "com.ash.hivra.mobile",
       "infoPlist": {
-        "CFBundleDisplayName": "Monocode",
-        "NSLocalNetworkUsageDescription": "Connect securely to your paired Monocode desktop.",
+        "CFBundleDisplayName": "Hivra",
+        "NSLocalNetworkUsageDescription": "Connect securely to your paired Hivra desktop.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
+      "package": "com.ash.hivra.mobile",
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -73,7 +73,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Scan the pairing code from your Monocode desktop.",
+          "cameraPermission": "Scan the pairing code from your Hivra desktop.",
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
         }
@@ -82,13 +82,13 @@
         "expo-image-picker",
         {
           "photosPermission": "Choose photos to attach to messages, or as the background of new sessions.",
-          "cameraPermission": "Scan the pairing code from your Monocode desktop."
+          "cameraPermission": "Scan the pairing code from your Hivra desktop."
         }
       ],
       [
         "expo-audio",
         {
-          "microphonePermission": "Dictate messages to your Monocode sessions.",
+          "microphonePermission": "Dictate messages to your Hivra sessions.",
           "recordAudioAndroid": false,
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": false
@@ -100,13 +100,8 @@
       "typedRoutes": true,
       "reactCompiler": true
     },
-    "extra": {
-      "eas": {
-        "projectId": "f80fe97b-6056-48a4-9fb2-b45ca2c8974b"
-      }
-    },
     "updates": {
-      "url": "https://u.expo.dev/f80fe97b-6056-48a4-9fb2-b45ca2c8974b"
+      "enabled": false
     }
   }
 }

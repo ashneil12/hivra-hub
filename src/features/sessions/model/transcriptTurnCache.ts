@@ -97,9 +97,8 @@ export class TranscriptTurnCache {
     // Each run in a merged Mono turn folds on its own: an earlier answer is
     // not narration for the work that the next run went on to do.
     const items = inlineWork
-      ? monoTurnRuns(turn).flatMap((run, index, runs) =>
+      ? monoTurnRuns(turn).flatMap((run) =>
           groupMonoTurnItems(visible(run), {
-            live: !settled && index === runs.length - 1,
             undeliveredMessageIds,
           }),
         )

@@ -45,12 +45,50 @@ pub(crate) enum GitFail {
     Rejected,
 }
 
+/// One extra try when git could not be started. A command git rejected is not
+/// tried again, and neither is one that started and timed out: that wait already
+/// used the whole timeout, and the command may have run part-way. The timeout
+/// itself is unchanged.
+const SPAWN_ATTEMPTS: u32 = 2;
+
+/// Why one try failed. Only `Spawn` is worth another try.
+#[derive(Debug)]
+enum Miss {
+    /// The child never started: git missing, briefly locked or out of processes.
+    Spawn,
+    /// The child started and did not finish within the wait.
+    Timeout,
+    /// The child finished and git rejected the command.
+    Rejected,
+}
+
 /// Run a child and kill it when the wait exceeds `timeout`.
 pub fn run_limited(mut cmd: Command, timeout: Duration) -> Result<String, GitFail> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
-    let child = cmd.spawn().map_err(|_| GitFail::Unavailable)?;
+    retry_spawn(|| run_once(&mut cmd, timeout))
+}
+
+/// Try again only after the child failed to start, then report every miss as
+/// the `GitFail` callers already handle.
+fn retry_spawn(mut run: impl FnMut() -> Result<String, Miss>) -> Result<String, GitFail> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match run() {
+            Ok(out) => return Ok(out),
+            Err(Miss::Spawn) if attempt < SPAWN_ATTEMPTS => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(Miss::Spawn | Miss::Timeout) => return Err(GitFail::Unavailable),
+            Err(Miss::Rejected) => return Err(GitFail::Rejected),
+        }
+    }
+}
+
+fn run_once(cmd: &mut Command, timeout: Duration) -> Result<String, Miss> {
+    let child = cmd.spawn().map_err(|_| Miss::Spawn)?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -60,17 +98,20 @@ pub fn run_limited(mut cmd: Command, timeout: Duration) -> Result<String, GitFai
         Ok(Ok(out)) if out.status.success() => {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         }
-        Ok(_) => Err(GitFail::Rejected),
+        Ok(_) => Err(Miss::Rejected),
         Err(_) => {
             stop(pid);
-            Err(GitFail::Unavailable)
+            Err(Miss::Timeout)
         }
     }
 }
 
 fn git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, GitFail> {
-    let mut cmd = crate::delivery::child("git");
-    cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
+    // A git dir outside the checkout is unavailable, not an empty history: recent_shas treats Rejected as no commits.
+    crate::git_cmd::ensure_contained(repo).map_err(|_| GitFail::Unavailable)?;
+    let mut cmd = crate::git_cmd::child();
+    cmd.arg("--no-pager").arg("-C").arg(repo);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_CONFIG_NOSYSTEM", "1");
@@ -311,6 +352,164 @@ mod tests {
         let started = Instant::now();
         let result = super::run_limited(hang(), Duration::from_millis(300));
         assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        // One 300 ms wait. A timeout is not tried again, so nothing doubles it.
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Each start of the child appends a line to a marker file, then hangs. A
+    /// second start after the timeout would add a second line.
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_is_not_tried_again() {
+        let marker = std::env::temp_dir().join(format!(
+            "hivra-git-timeout-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("echo started >> \"$1\"; exec sleep 30")
+            .arg("sh")
+            .arg(&marker);
+        let result = super::run_limited(cmd, Duration::from_secs(2));
+        let starts = std::fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&marker);
+        assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        assert_eq!(starts, 1, "the command was started {starts} times");
+    }
+
+    #[test]
+    fn a_rejected_command_is_not_tried_again() {
+        // A loaded Windows runner can take several seconds just to start git, so a
+        // short wait turned a rejection into a timeout. Wait long enough that only a
+        // real hang times out. Rejected (not Unavailable) is the proof: run_limited
+        // tries again only after a failed start, so a rejection returns on the first try.
+        let mut cmd = crate::git_cmd::git_keep_hooks();
+        cmd.arg("not-a-command");
+        let result = super::run_limited(cmd, Duration::from_secs(60));
+        assert!(
+            matches!(result, Err(super::GitFail::Rejected)),
+            "expected Rejected, got {result:?}"
+        );
+    }
+
+    /// Run the retry policy against a scripted child. Returns the outcome and
+    /// how many times the child was started.
+    fn scripted(
+        script: Vec<Result<String, super::Miss>>,
+    ) -> (Result<String, super::GitFail>, usize) {
+        let mut script = script.into_iter();
+        let mut starts = 0;
+        let result = super::retry_spawn(|| {
+            starts += 1;
+            script.next().expect("started more often than scripted")
+        });
+        (result, starts)
+    }
+
+    #[test]
+    fn a_failed_start_is_tried_once_more() {
+        let (result, starts) = scripted(vec![Err(super::Miss::Spawn), Ok("sha\n".into())]);
+        assert_eq!(result.expect("the second try answers"), "sha\n");
+        assert_eq!(starts, 2);
+    }
+
+    #[test]
+    fn two_failed_starts_are_unavailable() {
+        let (result, starts) = scripted(vec![Err(super::Miss::Spawn), Err(super::Miss::Spawn)]);
+        assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        assert_eq!(starts, super::SPAWN_ATTEMPTS as usize);
+    }
+
+    #[test]
+    fn a_timeout_after_a_failed_start_is_not_tried_again() {
+        let (result, starts) = scripted(vec![Err(super::Miss::Spawn), Err(super::Miss::Timeout)]);
+        assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        assert_eq!(starts, 2);
+    }
+
+    #[test]
+    fn a_timeout_is_one_try() {
+        let (result, starts) = scripted(vec![Err(super::Miss::Timeout)]);
+        assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn a_rejection_is_one_try() {
+        let (result, starts) = scripted(vec![Err(super::Miss::Rejected)]);
+        assert!(matches!(result, Err(super::GitFail::Rejected)));
+        assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_is_unavailable() {
+        let cmd = Command::new("hivra-no-such-program-for-git-retry");
+        let result = super::run_limited(cmd, Duration::from_secs(5));
+        assert!(matches!(result, Err(super::GitFail::Unavailable)));
+    }
+}
+
+/// Review r3 repro for PR #208 (WP-178). The builder's answer to open call (2) is that the app's own attribution git
+/// calls are read-only and run no hooks. They run no hooks, but a read-only `git diff` still runs a textconv program
+/// named in the repository's config, and the profile lets a sandboxed agent redirect that config with `.git/commondir`.
+/// `dirty_hashes` then runs the agent's program outside the sandbox. Red at 4417a9621.
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn the_app_attribution_diff_never_runs_a_textconv_from_a_redirected_common_dir() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("attr-r3-{}-{nanos}", std::process::id()));
+        let main = root.join("main");
+        let evil = root.join("agent-common-dir");
+        let marker = root.join("RAN-OUTSIDE-THE-SANDBOX");
+        std::fs::create_dir_all(&main).unwrap();
+        let run = |args: &[&str]| {
+            let ok = crate::git_cmd::git()
+                .arg("-C")
+                .arg(&main)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "hello\n").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "-q", "-m", "a"]);
+
+        std::fs::create_dir_all(&evil).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/objects"), evil.join("objects")).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/refs"), evil.join("refs")).unwrap();
+        std::fs::write(
+            evil.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[diff \"x\"]\n\ttextconv = \"touch '{}'; cat\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(main.join(".git/commondir"), format!("{}\n", evil.display())).unwrap();
+        std::fs::write(main.join(".gitattributes"), "* diff=x\n").unwrap();
+        std::fs::write(main.join("a.txt"), "hello\nmore\n").unwrap();
+
+        let _ = dirty_hashes(&main);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ran,
+            "attribution's own git diff ran the agent's textconv outside the sandbox"
+        );
     }
 }

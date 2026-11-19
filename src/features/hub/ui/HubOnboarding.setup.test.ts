@@ -45,7 +45,7 @@ describe("setup before the welcome choices", () => {
   it("opens on the checks, with no way past them until they pass", () => {
     render();
     expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("setup");
-    expect(container.textContent).toContain("Step 1 of 5");
+    expect(container.textContent).toContain("Step 1 of 7");
     expect(container.querySelector("[data-hub-onboarding-skip]")).toBeNull();
     expect(container.querySelector("[data-hub-onboarding-name]")).toBeNull();
     expect(next().disabled).toBe(true);
@@ -53,7 +53,7 @@ describe("setup before the welcome choices", () => {
     expect(next().disabled).toBe(false);
     act(() => next().click());
     expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("welcome");
-    expect(container.textContent).toContain("Step 2 of 5");
+    expect(container.textContent).toContain("Step 2 of 7");
   });
 
   it("'Not now' closes without finishing onboarding or proving anything, and is remembered (r61)", () => {
@@ -65,12 +65,12 @@ describe("setup before the welcome choices", () => {
     expect(setupCardSnoozed()).toBe(true);
   });
 
-  it("leaves a proved install with just the four welcome steps, even when opened on purpose", () => {
+  it("leaves a proved install with just the six welcome steps, even when opened on purpose", () => {
     finishOnboarding();
     proveAll();
     render();
     expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("welcome");
-    expect(container.textContent).toContain("Step 1 of 4");
+    expect(container.textContent).toContain("Step 1 of 6");
   });
 
   it("is the only step when the choices have been made but setup has not", () => {

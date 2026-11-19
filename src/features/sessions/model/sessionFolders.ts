@@ -113,6 +113,7 @@ export function buildSessionList(
   ungrouped: SessionSummary[],
   pinnedCollapsed = false,
   reminderGroup?: { sessionIds: readonly string[]; collapsed: boolean },
+  compare: (a: SessionSummary, b: SessionSummary) => number = compareSessionSummaries,
 ): SessionListEntry[] {
   const byId = new Map(visible.map((session) => [session.id, session]));
   const reminderIds = new Set(reminderGroup?.sessionIds);
@@ -135,7 +136,7 @@ export function buildSessionList(
       if (session && !reminderIds.has(id)) members.push(session);
     }
     if (members.length === 0) continue;
-    members.sort(compareSessionSummaries);
+    members.sort(compare);
     entries.push({ kind: "folder", folder, sessions: members });
   }
 

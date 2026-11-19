@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runLimited, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
 import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, renameApp, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
@@ -33,6 +33,19 @@ const HUB = "com.ash.monocode-hub";
 const SHA_A = "a".repeat(40);
 const pids = new Set();
 const roots = [];
+
+/**
+ * How long the real app waits for a held data folder before it refuses with exit 75: `LOCK_WAIT` in
+ * src-tauri/src/instance.rs, read from the source so the fake app below can't drift from it. A rename or a change of
+ * shape fails here, loudly, instead of leaving the fake on an old number.
+ */
+function realLockWaitMs() {
+  const source = fs.readFileSync(path.join(SCRIPTS, "..", "src-tauri", "src", "instance.rs"), "utf8");
+  const found = /^const LOCK_WAIT: Duration = Duration::from_(secs|millis)\((\d+)\);/m.exec(source);
+  if (!found) throw new Error("instance.rs no longer has `const LOCK_WAIT: Duration = Duration::from_secs(N);`: teach realLockWaitMs() its new shape");
+  return Number(found[2]) * (found[1] === "secs" ? 1000 : 1);
+}
+const REAL_LOCK_WAIT_MS = realLockWaitMs();
 
 /**
  * Every live process started from one of this suite's temporary folders (its command line names the folder: the fake
@@ -60,13 +73,11 @@ function strays() {
   return [...found.values()];
 }
 
+const WINDOWS_PROCESS_TIMEOUT_MS = 15_000;
+
 function straysWindows() {
   const bin = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const ps = spawnSync(
-    bin,
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
+  const ps = queryWindowsProcesses((command, args, options) => spawnSync(command, args, options), bin);
   let parsed = [];
   try {
     const value = JSON.parse(ps.stdout || "[]");
@@ -88,6 +99,19 @@ function straysWindows() {
       }
   }
   return [...found.values()];
+}
+
+/** WMI has no deadline of its own. A hung query is a failure, not a wait. */
+function queryWindowsProcesses(spawnImpl, bin) {
+  const ps = spawnImpl(
+    bin,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: WINDOWS_PROCESS_TIMEOUT_MS },
+  );
+  if (ps.error?.code === "ETIMEDOUT") {
+    throw new Error(`listing Windows processes did not finish within ${WINDOWS_PROCESS_TIMEOUT_MS / 1000}s`);
+  }
+  return ps;
 }
 
 function alive(pid) {
@@ -169,13 +193,23 @@ const read = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8"));
 const data = path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub");
 fs.mkdirSync(data, { recursive: true });
 let lock = null;
-// Wait for the lock to go, with a deadline far past what a loaded machine needs holding it.
-const deadline = Date.now() + 60_000;
+// Wait the way the real app does (src-tauri/src/instance.rs): try, and while another copy holds the folder retry every
+// 100 ms until its LOCK_WAIT is over, then refuse with exit 75. Never longer: the runner opens a build with the folder
+// free, so a build that has to wait here would have to wait in the real app too.
+const started = Date.now();
+let tries = 0;
 while (!lock) {
+  tries += 1;
   const db = new DatabaseSync(path.join(data, "instance-owner.sqlite"));
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
-  catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
+  catch {
+    db.close();
+    if (tries === 1) fs.writeFileSync(path.join(process.env.HOME, "lock-waiting.json"), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    if (Date.now() - started >= ${REAL_LOCK_WAIT_MS}) process.exit(75);
+    await sleep(100);
+  }
 }
+fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started, at: Date.now() }) + "\n");
 // Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
 globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
@@ -195,7 +229,9 @@ const first = ship();
 const onTrial = first?.state?.phase === "trial" && first.state.to.sha === fake.sha;
 if (onTrial) fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
 if (onTrial && fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
+let quitting = false;
 setInterval(() => {
+  if (quitting) return;
   const now = ship();
   if (!now?.state) return;
   const { dir, state } = now;
@@ -205,7 +241,14 @@ setInterval(() => {
     fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
   else if (staged && fake.behavior !== "refuse") {
     fs.writeFileSync(path.join(dir, "accepted.json"), JSON.stringify({ pid: process.pid, bridge: "down" }));
-    process.exit(0);
+    if (!fake.quitDelayMs) process.exit(0);
+    // A real app takes a moment to quit and keeps the data folder until it is gone: this one for as long as the test says.
+    quitting = true;
+    const quitStartedAt = Date.now();
+    setTimeout(() => {
+      fs.appendFileSync(path.join(process.env.HOME, "lock-releases.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, quitStartedAt, releasedAt: Date.now() }) + "\n");
+      process.exit(0);
+    }, fake.quitDelayMs);
   }
   if (["commit", "old"].includes(fake.behavior) && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
     fs.writeFileSync(path.join(dir, "committed.json"), JSON.stringify({ sha: fake.sha, pid: process.pid }));
@@ -256,16 +299,19 @@ process.exit(0);
 const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
+# The entitlements a bundle carries (the dictation helper's audio input entitlement, WP-131b) are in Contents/Resources.
+if [ "$2" = "--entitlements" ]; then cat "$last/Contents/Resources/entitlements.plist" 2>/dev/null; exit 0; fi
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
 if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
-  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi ;;
+  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi
+       echo "TeamIdentifier=TESTTEAM01" >&2; echo "CodeDirectory v=20500 size=1674 flags=0x10000(runtime) hashes=41+7" >&2 ;;
   -d) if [ "$sig" = adhoc ]; then echo 'designated => cdhash H"0000"'; else echo "designated => identifier \\"${HUB}\\" and certificate leaf[subject.CN] = \\"$sig\\""; fi ;;
 esac
 exit 0
 `;
 
-function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version }) {
+function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version, quitDelayMs = 0 }) {
   fs.mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   fs.mkdirSync(path.join(app, "Contents/Resources"), { recursive: true });
   fs.writeFileSync(
@@ -273,6 +319,31 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
     `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>monocode</string>${version ? `<key>CFBundleShortVersionString</key><string>${version}</string>` : ""}</dict></plist>
+`,
+  );
+  // The dictation helper (WP-131b): its own identifier, both usage strings, and the audio input entitlement.
+  const helper = path.join(app, "Contents/Helpers/MonoCode Dictation.app");
+  fs.mkdirSync(path.join(helper, "Contents/MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(helper, "Contents/Resources"), { recursive: true });
+  fs.writeFileSync(
+    path.join(helper, "Contents/Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}.dictation</string><key>CFBundleExecutable</key><string>monocode-dictation</string><key>NSMicrophoneUsageDescription</key><string>Dictation listens while you dictate.</string><key>NSSpeechRecognitionUsageDescription</key><string>Dictation recognises speech on this Mac.</string></dict></plist>
+`,
+  );
+  fs.writeFileSync(
+    path.join(helper, "Contents/Resources/entitlements.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>
+`,
+  );
+  // The launch agent names the helper bundle. hub:ship requires it while the kill switch allows dictation.
+  const agents = path.join(app, "Contents/Library/LaunchAgents");
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(
+    path.join(agents, "com.ash.monocode-hub.dictation.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>com.ash.monocode-hub.dictation</string><key>BundleProgram</key><string>Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation</string></dict></plist>
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
@@ -322,12 +393,26 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
       }),
     );
   }
-  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
+  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch, quitDelayMs }));
   return app;
 }
 
+/**
+ * The hub:check-all record for `sha` as it is written now (SC-2): the unit checks passed, the built app launched and
+ * stayed up under a temporary HOME, and hub:verify-live has a recorded pass for the commit.
+ */
+function passRecord(sha, more = {}) {
+  return {
+    sha,
+    ok: true,
+    launch: { ok: true, upSeconds: 30, at: "2026-11-13T10:00:00.000Z" },
+    verifyLive: { ok: true, verdict: "evidence/20261113-100000-ab12/verdict.json", at: "2026-11-13T09:50:00.000Z" },
+    ...more,
+  };
+}
+
 /** A temporary HOME with an installed old app and its data, a clean checkout, and a new bundle built from its HEAD. */
-function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
+function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0, newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
@@ -349,9 +434,9 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   git("commit", "-q", "-m", "fixture");
   const sha = git("rev-parse", "HEAD");
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify(passRecord(sha)));
   const paths = homePaths(home);
-  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root, quitDelayMs: oldQuitDelayMs });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
@@ -377,7 +462,7 @@ function nextBuild(w, behavior) {
   w.git("add", ".");
   w.git("commit", "-q", "-m", "a change");
   const sha = w.git("rev-parse", "HEAD");
-  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify(passRecord(sha)));
   bundleAt(w.bundle, { sha, behavior, root: w.root });
   return sha;
 }
@@ -390,8 +475,75 @@ function rollbackCli(w, id, args = [], env = {}) {
   );
 }
 
+const SHIP_CLI_TIMEOUT_MS = 60_000;
+
+function runBounded(command, args, { timeoutMs = SHIP_CLI_TIMEOUT_MS, label, env } = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: timeoutMs, env });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`${label} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+  }
+  return result;
+}
+
+test("a command that does not answer is stopped, and a rejected one is not rewritten", () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      runLimited(execFileSync, process.execPath, ["-e", "setTimeout(() => {}, 1e8)"], {
+        timeout: 1000,
+        label: "git status",
+      }),
+    /git status did not answer within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+  assert.throws(
+    () =>
+      runLimited(
+        () => {
+          const error = new Error("not a git repository");
+          error.status = 128;
+          throw error;
+        },
+        "git",
+        ["status"],
+        { timeout: 15_000, label: "git status" },
+      ),
+    (error) => error.message === "not a git repository",
+  );
+});
+
+test("a child that does not exit is stopped within the bound", () => {
+  const started = Date.now();
+  assert.throws(
+    () => runBounded(NODE, ["-e", "setTimeout(() => {}, 1e8)"], { timeoutMs: 1000, label: "hub-ship" }),
+    /hub-ship did not finish within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+});
+
+test("a Windows process list that does not answer fails instead of hanging", () => {
+  let seen = 0;
+  assert.throws(
+    () =>
+      queryWindowsProcesses(() => {
+        const error = new Error("timed out");
+        error.code = "ETIMEDOUT";
+        return { error, stdout: "" };
+      }, "powershell.exe"),
+    /listing Windows processes did not finish within 15s/,
+  );
+  const ps = queryWindowsProcesses((_command, _args, options) => {
+    seen = options.timeout;
+    return { stdout: "[]" };
+  }, "powershell.exe");
+  assert.equal(seen, WINDOWS_PROCESS_TIMEOUT_MS);
+  assert.equal(ps.stdout, "[]");
+});
+
 function ship(w, args = [], env = {}) {
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
     [
       "--disable-warning=ExperimentalWarning",
@@ -407,8 +559,9 @@ function ship(w, args = [], env = {}) {
       "30000,6000,30000",
       ...args,
     ],
-    { env: { ...w.env, ...env }, encoding: "utf8" },
+    { env: { ...w.env, ...env }, label: "hub-ship" },
   );
+  if (!result.stdout.trim()) throw new Error(`hub-ship printed no answer (status ${result.status}): ${result.stderr}`);
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   return { code: result.status, answer };
 }
@@ -599,25 +752,112 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   assert.equal(receipt.outcome, "committed");
   assert.equal(receipt.running.sha, w.sha);
   assert.equal(receipt.from.sha, SHA_A);
+  // Who holds the folder while the runner opens a build? Nobody: the old app has quit, the runner held the folder for
+  // the swap and let go just before opening the new build, so the build takes it on its first try. The real app only
+  // waits LOCK_WAIT (the fake app waits the same), so a runner that opened a build while still holding it would fail here.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[SHA_A, 1], [w.sha, 1]],
+    "the trial build found the data folder free",
+  );
   assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha);
   assert.equal(readJson(path.join(w.data, "ship/current.json")).id, answer.id);
   assert.equal(state.launch.mode, "direct", "under a temporary HOME the app is opened directly");
   assert.equal(state.launch.env.CFFIXED_USER_HOME, w.home);
 });
 
-// The app takes the data folder's lock like the real one. On a loaded machine the previous holder can take longer
-// than a couple of seconds to let go; the app must wait for the lock to go, not give up and make the ship roll back.
-test("the app waits for a held data-folder lock instead of giving up after two seconds", async () => {
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Each fake app that took the data folder, in order: which build, and how many tries it needed. */
+function lockWaits(w) {
+  try {
+    return fs
+      .readFileSync(path.join(w.home, "lock-waits.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+/** The fake app, started like `startApp`, with a promise for how it ended. */
+function startAppWatched(w) {
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
+  pids.add(child.pid);
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now() })));
+  child.unref();
+  return { pid: child.pid, exited };
+}
+
+// The fake app takes the data folder's lock the way the real one does (src-tauri/src/instance.rs): retry every 100 ms
+// for the real wait, then refuse with exit 75. It used to wait 60 s, so every ship test would have passed a build that
+// the real app, giving up after 2 s, turns into a rolled-back ship. Nothing here lets it wait longer than the app.
+test("a copy that finds the data folder held takes it once the holder lets go inside the app's wait", async () => {
   const w = world();
-  const lock = tryLock(path.join(w.data, "instance-owner.sqlite"));
-  assert.ok(lock, "the test holds the data folder's lock");
-  const pid = startApp(w);
-  // Past the old two-second budget, where the app used to exit 75.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.equal(alive(pid), true, "the app is still waiting for the lock, not gone");
-  releaseLock(lock);
-  const running = await until("the app to take the lock", () => readJson(path.join(w.data, "running.json")), 30_000);
-  assert.equal(running.pid, pid);
+  let holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    await pause(REAL_LOCK_WAIT_MS / 4);
+    assert.equal(alive(app.pid), true, "the app is still inside its wait, not gone");
+    releaseLock(holder);
+    holder = null;
+    const running = await until("the app to take the folder", () => readJson(path.join(w.data, "running.json")), REAL_LOCK_WAIT_MS + 30_000);
+    assert.equal(running.pid, app.pid);
+    assert.ok(lockWaits(w)[0].tries > 1, "it had to retry for the folder");
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+test("a copy still finding the data folder held when the app's wait is over refuses with exit 75, as the real app does", async () => {
+  const w = world();
+  const holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    const waiting = await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    let ended = null;
+    app.exited.then((how) => (ended = how));
+    await until("the app to give up", () => ended, REAL_LOCK_WAIT_MS + 10_000);
+    assert.equal(ended.code, 75, `it refused: ${JSON.stringify(ended)}`);
+    assert.ok(ended.at - waiting.at >= REAL_LOCK_WAIT_MS - 500, `it waited the real ${REAL_LOCK_WAIT_MS} ms before refusing, not less`);
+    assert.equal(readJson(path.join(w.data, "running.json")), null, "it never took the folder");
+    assert.deepEqual(lockWaits(w), []);
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+// An old app can be slow to quit and keep the data folder past the new build's whole wait. The runner is who waits for
+// that, not the new build: it opens the build only once it holds the folder itself, so the build finds it free. A runner
+// that opened the build while the old app still held the folder would get exit 75 from the build, as the real app would.
+test("an old app that keeps the data folder past the app's wait is waited out by the runner, not by the new build", async () => {
+  const quitDelayMs = REAL_LOCK_WAIT_MS + 2_000;
+  const w = world({ oldQuitDelayMs: quitDelayMs });
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const { code, answer } = ship(w);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  const state = await until("the commit", settled(dir, "committed"), 90_000);
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  const [released] = fs
+    .readFileSync(path.join(w.home, "lock-releases.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.equal(released.sha, SHA_A);
+  assert.ok(released.releasedAt - released.quitStartedAt > REAL_LOCK_WAIT_MS, "the old app kept the folder longer than the app's wait");
+  const [, fresh] = lockWaits(w);
+  assert.equal(fresh.sha, w.sha);
+  assert.ok(fresh.at >= released.releasedAt, "the new build took the folder only after the old app let go");
+  assert.equal(fresh.tries, 1, "and found it free on its first try");
+  assert.equal(state.launch.mode, "direct");
 });
 
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
@@ -641,6 +881,13 @@ test("no commit rolls back: the old app returns and the database matches its cop
   const receipt = readJson(path.join(dir, "receipt.json"));
   assert.equal(receipt.outcome, "rolled-back");
   assert.equal(receipt.running.sha, SHA_A);
+  // The rollback hands the folder over the same way: the stopped trial build is gone, the runner held the folder to
+  // put the old build back, and the reopened old build takes it on its first try.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[w.sha, 1], [SHA_A, 1]],
+    "the trial build and the reopened old build each found the data folder free",
+  );
 });
 
 test("a build that exits during its trial is rolled back at once", async () => {
@@ -693,10 +940,10 @@ test("a rollback drill goes all the way to a commit, then puts the old build bac
 
 test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not register a service", async () => {
   const w = world();
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
     ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
-    { env: w.env, encoding: "utf8" },
+    { env: w.env, label: "hub-ship" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   assert.equal(result.status, 0, JSON.stringify(answer));
@@ -788,6 +1035,109 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.equal(fs.existsSync(path.join(w.data, "ship")), false, `${what}: nothing staged`);
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
+  }
+});
+
+// SC-2: hub:check-all's record now also says the built app launched and stayed up under a temporary HOME, and that
+// hub:verify-live has a pass for the commit. A record without both is refused, and so is every record written before.
+test("SC-2: a check pass that doesn't say the built app launched and verify-live passed is refused", () => {
+  const without = (w, field) => {
+    const record = passRecord(w.sha);
+    delete record[field];
+    return record;
+  };
+  const cases = [
+    [
+      "a record written before the launch check existed",
+      (w) => ({ sha: w.sha, ok: true }),
+      /This commit's checks passed but the built app was not launched; run npm run hub:check-all again\./,
+    ],
+    ["a record with no launch", (w) => without(w, "launch"), /built app was not launched/],
+    ["a launch that did not pass", (w) => passRecord(w.sha, { launch: { ok: false, upSeconds: 3, at: "x" } }), /built app was not launched/],
+    ["a launch.ok that is the string true", (w) => passRecord(w.sha, { launch: { ok: "true", upSeconds: 30, at: "x" } }), /built app was not launched/],
+    ["a launch that is not an object", (w) => passRecord(w.sha, { launch: true }), /built app was not launched/],
+    ["a launch that is null", (w) => passRecord(w.sha, { launch: null }), /built app was not launched/],
+    [
+      "a record with no verify-live pass",
+      (w) => without(w, "verifyLive"),
+      /checks passed but no verify-live pass was recorded; run npm run hub:check-all again\./,
+    ],
+    ["a verify-live that did not pass", (w) => passRecord(w.sha, { verifyLive: { ok: false, verdict: "x", at: "x" } }), /no verify-live pass was recorded/],
+    ["a verify-live.ok that is 1", (w) => passRecord(w.sha, { verifyLive: { ok: 1 } }), /no verify-live pass was recorded/],
+    ["a record for another commit", () => passRecord("c".repeat(40)), /No passing npm run hub:check-all/],
+    ["a record that didn't pass", (w) => passRecord(w.sha, { ok: false }), /No passing npm run hub:check-all/],
+    ["a record naming another commit inside", (w) => passRecord(w.sha, { sha: "c".repeat(40) }), /No passing npm run hub:check-all/],
+  ];
+  for (const [what, record, expected] of cases) {
+    const w = world();
+    fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${w.sha}.json`), JSON.stringify(record(w)));
+    const { code, answer } = ship(w, ["--dry-run"]);
+    assert.equal(code, 1, what);
+    assert.equal(answer.ok, false, what);
+    assert.ok(
+      answer.refusals.some((refusal) => expected.test(refusal)),
+      `${what}: ${JSON.stringify(answer.refusals)}`,
+    );
+    assert.equal(fs.existsSync(path.join(w.data, "ship")), false, `${what}: nothing staged`);
+  }
+  // A record that is not JSON is no record.
+  const broken = world();
+  fs.writeFileSync(path.join(broken.repo, "target/hub-checks", `${broken.sha}.json`), "{ not json");
+  const refused = ship(broken, ["--dry-run"]);
+  assert.equal(refused.code, 1);
+  assert.ok(refused.answer.refusals.some((refusal) => /No passing npm run hub:check-all/.test(refusal)), JSON.stringify(refused.answer.refusals));
+});
+
+test("SC-2: a full record (unit checks, launch, verify-live) is accepted", () => {
+  const w = world();
+  const { code, answer } = ship(w, ["--dry-run"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  assert.equal(answer.facts.checks.launch.ok, true);
+  assert.equal(answer.facts.checks.verifyLive.ok, true);
+});
+
+test("SC-2: --skip-tests still ships with no check record, and with one from before the launch check", async () => {
+  const w = world();
+  const record = path.join(w.repo, "target/hub-checks", `${w.sha}.json`);
+  // With no record, the normal path refuses and the fast loop doesn't.
+  fs.rmSync(record);
+  assert.equal(ship(w, ["--dry-run"]).code, 1);
+  const none = ship(w, ["--skip-tests", "--dry-run"]);
+  assert.equal(none.code, 0, JSON.stringify(none.answer));
+  assert.deepEqual(none.answer.facts.checks, { skipped: true });
+  assert.ok(none.answer.warnings.some((warning) => /--skip-tests/.test(warning)), "it still warns, loudly");
+  // The same with a record written before the launch check existed.
+  fs.writeFileSync(record, JSON.stringify({ sha: w.sha, ok: true }));
+  assert.equal(ship(w, ["--dry-run"]).code, 1);
+  const old = ship(w, ["--skip-tests", "--dry-run"]);
+  assert.equal(old.code, 0, JSON.stringify(old.answer));
+  assert.deepEqual(old.answer.facts.checks, { skipped: true });
+  // And it really ships: every other check, the backup and the trial run as before.
+  const { code, answer } = ship(w, ["--skip-tests"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  await until("the commit", settled(dir, "committed"));
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  assert.equal(sha256File(path.join(dir, "backup/monocode.db")), w.before.db);
+});
+
+// WP-131c: the kill switch lets the setting decide, so a Mac bundle without the helper does not ship. Elsewhere the
+// helper check does not apply.
+test("a bundle without the dictation helper does not ship on macOS", () => {
+  const w = world();
+  fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true });
+  const { code, answer } = ship(w, ["--dry-run"]);
+  if (process.platform === "darwin") {
+    assert.equal(code, 1, JSON.stringify(answer));
+    assert.equal(answer.ok, false, JSON.stringify(answer));
+    assert.ok(
+      (answer.refusals ?? []).some((refusal) => /dictation helper is missing/.test(refusal)),
+      JSON.stringify(answer),
+    );
+  } else {
+    assert.equal(code, 0, JSON.stringify(answer));
+    assert.equal(answer.ok, true, JSON.stringify(answer));
   }
 });
 
@@ -1056,6 +1406,36 @@ test("SH-1: tidying old ships never archives the ship a rollback under way resto
   assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
 });
 
+test("SH-1: tidying archives nothing while a ship folder's state can't be read, so a rollback being written keeps its copy", () => {
+  // The Windows 'SH-1: hub:rollback of a ship with two newer ship folders…' failure: a read of the rollback's state.json
+  // during its writer's rename comes back empty, the tidy-up no longer sees which ship the rollback restores from, and
+  // archives it. An unreadable state could be that rollback, so nothing moves until it can be read.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "ship");
+  const archive = path.join(root, "archive");
+  const write = (id, text) => {
+    fs.mkdirSync(path.join(ships, id, "backup"), { recursive: true });
+    fs.writeFileSync(path.join(ships, id, "state.json"), text);
+  };
+  const committed = "20261022-000001-1111111";
+  write(committed, JSON.stringify({ id: committed, phase: "committed" }));
+  write("20261022-000002-2222222", JSON.stringify({ id: "20261022-000002-2222222", phase: "rolled-back" }));
+  write("20261022-000003-3333333", JSON.stringify({ id: "20261022-000003-3333333", phase: "rolled-back" }));
+  const rollback = "20261022-000004-aaaaaaa-rollback";
+  // Half written, as a read in the middle of the writer's replace can see it.
+  write(rollback, '{"id":"20261022-000004-aaaaaaa-rollback","phase":"wai');
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")), "the rollback's database copy stays put");
+  // A folder still being staged, with no state yet, is the same unknown.
+  fs.rmSync(path.join(ships, rollback, "state.json"));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  // Once it reads as the rollback it is, the committed ship is protected by name and the rest is tidied as before.
+  write(rollback, JSON.stringify({ id: rollback, phase: "waiting", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } }));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")));
+});
+
 test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", { skip: process.platform === "win32" }, async () => {
   const w = world();
   const ships = path.join(w.data, "ship");
@@ -1117,6 +1497,8 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
   assert.ok(answer.refusals.some((refusal) => /isn't signed/.test(refusal)), JSON.stringify(answer.refusals));
   assert.equal(stampOf(unsigned.app).sha, SHA_A);
 
+  // root reads a chmod 0 file anyway, so the unreadable-file half can't be set up as root (a cloud box, a container).
+  if (process.platform !== "win32" && process.getuid?.() === 0) return;
   // ditto stops on a file it can't read, after copying part of the bundle.
   // chmod 0 does not deny read on Windows; an icacls deny does, and is taken off again so the temp tree can go.
   const w = world();

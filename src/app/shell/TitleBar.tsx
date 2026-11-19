@@ -1,3 +1,8 @@
+import { ChiefChips } from "../../features/asks/ui/ChiefGlance";
+import { useChiefLists } from "../../features/asks/model/chiefLists";
+import { pickChief } from "../../features/home/model/chief";
+import { oneChatId } from "../../features/asks/model/oneChat";
+import { listMonos } from "../../features/monos/model/mono";
 import {
   CheckCircle,
   ChevronLeft,
@@ -72,6 +77,7 @@ import {
   type AppView,
 } from "../../features/workspace/model/appViewTabs";
 import { windowTitleSuffix } from "../model/appIdentity";
+import { ONE_CHAT_LOOK } from "../../features/hub/model/hubBundle";
 
 const APP_VIEW_ICONS = {
   search: Search,
@@ -91,6 +97,8 @@ export type Tab = {
   title: string;
   /** Other conversation titles in this tab, focused session omitted. */
   more: string[];
+  /** WP-177: set when the focused chat moved to another machine; the name of that machine. */
+  movedTo?: string;
   sessionCount: number;
   harnesses: HarnessId[];
   /** Harnesses with an in-flight turn in this tab. */
@@ -130,7 +138,7 @@ type Props = {
    * The Mono filling the main area. It takes the tabs' place, and nothing
    * project-scoped belongs beside it.
    */
-  mono?: { look: MonoLook; state: MonoState };
+  mono?: { id?: string; look: MonoLook; state: MonoState };
   /**
    * Takes the tabs' place, as the inset layout's Settings does with its
    * breadcrumb and actions.
@@ -232,6 +240,7 @@ export function tabCopy(tab: Tab): {
     if (sessions) metaParts.push(sessions);
   }
 
+  if (tab.movedTo) metaParts.unshift(`Moved to ${tab.movedTo}`);
   const meta = metaParts.join(" · ");
 
   const tooltipParts = [project];
@@ -683,8 +692,19 @@ export function TabVisitNav({
   );
 }
 
+/** The chips show only on the Chief of Staff's chat. */
+function ChiefChipsFor({ monoId }: { monoId?: string }) {
+  const place = useChiefLists();
+  if (place !== "top" || !monoId) return null;
+  const chief = pickChief(listMonos());
+  if (chief?.id !== monoId) return null;
+  // A quoted row goes into the one chat (or, without it, the Chief of Staff's main chat).
+  return <ChiefChips quoteTo={oneChatId() ?? chief.sessionId} />;
+}
+
 /** A Mono's team, overview toggle and settings, beside its conversation. */
 export function MonoViewActions({
+  monoId,
   name,
   overviewOpen,
   onToggleOverview,
@@ -692,6 +712,8 @@ export function MonoViewActions({
   team,
   className = "",
 }: {
+  /** The first mate whose chat this is, so the Chief of Staff is known by who it is and not by its name. */
+  monoId?: string;
   name: string;
   overviewOpen: boolean;
   onToggleOverview?: () => void;
@@ -705,6 +727,8 @@ export function MonoViewActions({
 }) {
   return (
     <div className={`flex items-center gap-1 ${className}`}>
+      {/* One main chat: the Chief of Staff's Needs you, You asked and Working, as chips. */}
+      <ChiefChipsFor monoId={monoId} />
       {team ? (
         <button
           type="button"
@@ -1122,6 +1146,7 @@ function TitleBarComponent({
         ) : null}
         {mono && (onToggleMonoOverview || onOpenMonoSettings) ? (
           <MonoViewActions
+            monoId={mono.id}
             name={mono.look.name}
             overviewOpen={monoOverviewOpen}
             onToggleOverview={onToggleMonoOverview}
@@ -1133,7 +1158,7 @@ function TitleBarComponent({
         {showTrailingActions ? (
           <div className="flex items-center gap-0.5 px-2">
             {projectless && railClosed && onOpenInbox ? (
-              <IconButton label="Inbox" onClick={onOpenInbox}>
+              <IconButton label="Needs you" onClick={onOpenInbox}>
                 <Inbox className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
@@ -1404,6 +1429,38 @@ export const TitleBar = memo(TitleBarComponent);
 
 /** In a Mono's view the title bar names it and shows its status. */
 function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
+  const statusTone =
+    state.status === "needs-you"
+      ? "text-accent"
+      : state.status === "failed"
+        ? state.tone === "red"
+          ? "text-red-400"
+          : "text-amber-400"
+        : "text-content/45";
+  // Dropwave: the same strip as any other chat, with this first mate's chat as its one open tab.
+  if (ONE_CHAT_LOOK)
+    return (
+      <div data-mono-title className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-1.5 pr-2.5">
+        <div
+          data-title-tab
+          data-title-tab-active
+          className="flex h-7.5 w-56 min-w-40 shrink items-center gap-1.5 rounded-md bg-selection px-2 pr-2.5 text-content"
+        >
+          <PixelMascot
+            name={look.mascot}
+            color={look.color}
+            status={state.status}
+            still={state.status === "idle"}
+            className="size-3.5 shrink-0"
+          />
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{look.name}</span>
+          <span data-mono-status={state.status} className={`shrink-0 text-[11px] ${statusTone}`}>
+            {MONO_STATUS_LABEL[state.status]}
+            {state.status === "failed" && state.activity ? ` · ${state.activity}` : ""}
+          </span>
+        </div>
+      </div>
+    );
   return (
     <div
       data-mono-title
@@ -1416,7 +1473,8 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
         still={state.status === "idle"}
         className="size-4 shrink-0"
       />
-      <span className="min-w-0 truncate text-[13px] font-medium text-content">
+      {/* The name keeps its room; in a narrow bar it is the role after it that shortens. */}
+      <span className="min-w-0 max-w-[70%] shrink-0 truncate text-[13px] font-medium text-content">
         {look.name}
       </span>
       {look.id && !isProjectLeadId(look.id) ? <MonoRoleLabel id={look.id} role={look.role} /> : null}

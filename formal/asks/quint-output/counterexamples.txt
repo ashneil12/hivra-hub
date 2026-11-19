@@ -1,0 +1,122 @@
+=== inv_neverGone
+An example execution:
+[State 0]
+{
+  chatOpen: true,
+  nudges: 0,
+  rows:
+    Map(
+      1 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        },
+      2 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        },
+      3 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        }
+    )
+}
+[State 1]
+{
+  chatOpen: true,
+  nudges: 0,
+  rows:
+    Map(
+      1 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+=== inv_noStarvation
+An example execution:
+[State 0]
+{
+  chatOpen: false,
+  nudges: 0,
+  rows:
+    Map(
+      1 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        },
+      2 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        },
+      3 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",
+          knows: false,
+          orphan: false,
+          reported: false,
+          st: "unheard",
+          told: false,
+          touched: false
+        }
+    )
+}
+[State 1]
+{
+  chatOpen: false,
+  nudges: 0,
+  rows:
+    Map(
+      1 ->
+        {
+          age: 0,
+          dropper: "",
+          hand: false,
+          job: "none",

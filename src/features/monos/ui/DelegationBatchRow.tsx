@@ -24,8 +24,17 @@ import {
   dequeueWorker,
   heldLine,
   queuedWorker,
+  queuedWaitLine,
+  taskWait,
   useWorkerPoolVersion,
+  type QueuedWorker,
 } from "../model/workerPool";
+
+/** Held, or still waiting on a provider: the card says so. A worker-limit wait does not. */
+function waitsOnTask(job: QueuedWorker | undefined): boolean {
+  const reason = job ? taskWait(job)?.reason : undefined;
+  return reason === "held" || reason === "requires";
+}
 
 /** The row a launched chat's Stop acts on: its newest one, still running or asking. */
 function stoppableRow(
@@ -109,7 +118,13 @@ export function DelegationBatchRow({
               launch={launch}
               view={
                 waiting[index]
-                  ? { state: "waiting", title: waiting[index]!.title }
+                  ? {
+                      state: "waiting",
+                      title: waiting[index]!.title,
+                      // WP-171: held, or waiting on a provider, is another task. A free worker is the project's own limit.
+                      forTask: waitsOnTask(waiting[index]),
+                      waitingLine: queuedWaitLine(waiting[index]!),
+                    }
                   : cardView(
                       views?.get(launch.sessionId),
                       delegationOf(launch.sessionId, rows),

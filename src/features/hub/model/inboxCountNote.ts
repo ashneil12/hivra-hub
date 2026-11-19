@@ -2,6 +2,7 @@
 // again). When Ash asks a Lead how things stand, the app adds, on the wire only, the live count of this chat's asks on
 // his Inbox with their short names, so the count line's "waiting on you" is that number and the recap points to them
 // in one line instead of relisting options or picks.
+import { needsCount, needsListPublished } from "../../needs/model/needsYou";
 import { asksHowThingsStand } from "./statusAsk";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import { openPartsOf, runningWorkers, statusTruthLine } from "./statusTruth";
@@ -60,7 +61,8 @@ export function inboxCountLine(asks: readonly string[], others: readonly string[
   const count = n
     ? `${INBOX_COUNT_PREFIX} From the app, not Ash: his Inbox's Waiting on you holds ${n} ask${n === 1 ? "" : "s"} from you right now: ${names}. In your count line, "waiting on you" is exactly ${n}. Point to them in one line with short names only ("${n} decision${n === 1 ? " is" : "s are"} waiting for you in the Inbox: …"); never list their options or picks again.`
     : `${INBOX_COUNT_PREFIX} From the app, not Ash: his Inbox holds no asks from you right now, so leave "waiting on you" out of your count line.`;
-  return `${count}${theirs}${n || others.length ? never : ""} ${STATUS_SHAPE}`;
+  const across = needsListPublished() ? ` Needs you, across every project, is ${needsCount()}.` : "";
+  return `${count}${theirs}${across}${n || others.length ? never : ""} ${STATUS_SHAPE}`;
 }
 
 /** The wire text for one turn: Ash's status question gets the live Inbox count after it; anything else is unchanged. */
@@ -99,4 +101,4 @@ export function isDump(text: string): boolean {
  * r103 (2, B5 0255: Ash's last dump at +63s, the Lead's first word at +257s, then nothing until +1816s): a dump is
  * answered at once, in two short lines, before any tool call; the work and its accounting come after.
  */
-export const FIRST_REPLY_NOTE = `${INBOX_COUNT_PREFIX} From the app, not Ash: before any tool call, reply in at most two short lines: how many asks you got and what you're starting first (no list, no options). Then do the work. Anything in the asks that needs his yes or his pick (posting, money, legal, customer email, a choice between options) is never parked: give it its own "Needs Ash:" line with your pick, so it is a card on his Inbox. When you account for the asks later, keep it scannable: the count line, then one short line per group, never a numbered list of every ask.`;
+export const FIRST_REPLY_NOTE = `${INBOX_COUNT_PREFIX} From the app, not Ash: before any tool call, reply in at most two short, natural lines saying what you're starting first (no count of his asks, no list, no options). Then do the work. Anything in the asks that needs his yes or his pick (posting, money, legal, customer email, a choice between options) is never parked: give it its own "Needs Ash:" line with your pick, so it is a card on his Inbox. When you report back later, talk normally: one short line per group of work, never a tally or a numbered list of his asks.`;

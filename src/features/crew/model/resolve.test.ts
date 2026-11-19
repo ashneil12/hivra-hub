@@ -96,3 +96,113 @@ describe("role models", () => {
     expect(roleModel("plan", codex)).toEqual({ model: null, effort: "low" });
   });
 });
+
+describe("never use and the lock", () => {
+  const builder: CrewRule = { labels: ["builder"], paths: [], cli: "codex", model: "gpt-codex", effort: "high", source: "person" };
+  const reviewer: CrewRule = { labels: ["reviewer"], paths: [], cli: "cursor", source: "plugin" };
+  const open = { lockDefault: false, neverUse: [] as string[], fallback: [] as string[] };
+
+  it("matches a role label as an ordinary rule, and not a different role", () => {
+    const built = resolveRoute({ labels: ["Builder"], paths: [] }, [builder, reviewer], signed("claude"));
+    // WP-141: the matched rule's label goes back, the same as the Rust twin.
+    expect(built.ruleLabel).toBe("builder");
+    expect(built.cli).toBe("codex");
+    expect(built.cliFrom).toBe("rule");
+    expect(built.ruleIndex).toBe(0);
+    const looked = resolveRoute({ labels: ["reviewer"], paths: [] }, [builder, reviewer], signed("claude"));
+    expect(looked.cli).toBe("cursor");
+    expect(looked.ruleIndex).toBe(1);
+  });
+
+  it("with the lock off, an override still beats the role rule", () => {
+    const route = resolveRoute(
+      { labels: ["builder"], paths: [], override: { cli: "claude", model: "opus" } },
+      [builder],
+      signed("claude", "codex"),
+      { policy: open },
+    );
+    expect(route.cli).toBe("claude");
+    expect(route.cliFrom).toBe("override");
+    expect(route.model).toBe("opus");
+    expect(route.skipped).toEqual([]);
+  });
+
+  it("skips a banned CLI and does not keep that source's model or effort", () => {
+    const route = resolveRoute(
+      { labels: ["builder"], paths: [] },
+      [builder],
+      signed("codex", "claude"),
+      { policy: { ...open, neverUse: ["codex"] } },
+    );
+    expect(route.cli).toBe("claude");
+    expect(route.cliFrom).toBe("default");
+    expect(route.model).toBeNull();
+    expect(route.effort).toBeNull();
+    expect(route.skipped).toEqual([
+      { field: "cli", from: "rule", value: "codex", reason: "Codex is on Never use, so it was skipped." },
+    ]);
+  });
+
+  it("a banned override falls through to the brief", () => {
+    const route = resolveRoute(
+      {
+        labels: ["builder"],
+        paths: [],
+        override: { cli: "codex", model: "from-override", effort: "max" },
+        brief: { cli: "cursor", model: "from-brief" },
+      },
+      [builder],
+      signed("claude", "codex", "cursor"),
+      { policy: { ...open, neverUse: ["codex", "not a cli"] } },
+    );
+    expect(route.cli).toBe("cursor");
+    expect(route.cliFrom).toBe("brief");
+    expect(route.model).toBe("from-brief");
+    expect(route.effort).toBeNull();
+    expect(route.skipped).toEqual([
+      { field: "cli", from: "override", value: "codex", reason: "Codex is on Never use, so it was skipped." },
+    ]);
+  });
+
+  it("a banned default is skipped and the next signed-in CLI is used", () => {
+    const route = resolveRoute({ labels: [], paths: [] }, [], signed("codex", "claude"), {
+      policy: { ...open, neverUse: ["claude"] },
+    });
+    expect(route.cli).toBe("codex");
+    expect(route.cliFrom).toBe("default");
+    expect(route.skipped).toEqual([
+      { field: "cli", from: "default", value: "claude", reason: "Claude Code is on Never use, so it was skipped." },
+    ]);
+    const none = resolveRoute({ labels: [], paths: [] }, [], signed("claude"), {
+      policy: { ...open, neverUse: ["claude"] },
+    });
+    expect(none.cli).toBeNull();
+    expect(none.cliFrom).toBe("none");
+  });
+
+  it("with the lock on, the override is not applied and the brief still wins", () => {
+    const route = resolveRoute(
+      {
+        labels: ["builder"],
+        paths: [],
+        override: { cli: "grok", model: "big", effort: "max" },
+        brief: { cli: "cursor" },
+      },
+      [builder],
+      signed("claude", "codex", "cursor", "grok"),
+      { policy: { ...open, lockDefault: true } },
+    );
+    expect(route.cli).toBe("cursor");
+    expect(route.cliFrom).toBe("brief");
+    expect(route.model).toBe("gpt-codex");
+    expect(route.effort).toBe("high");
+    expect(route.skipped).toEqual([
+      {
+        field: "cli",
+        from: "override",
+        value: "grok",
+        reason: "Always use my default is on, so this override was not applied.",
+      },
+    ]);
+  });
+});

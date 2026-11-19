@@ -53,6 +53,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.useFakeTimers();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -62,6 +63,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.clearAllMocks();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -207,6 +209,9 @@ describe("file picker command mode", () => {
     );
     const dialog = document.querySelector<HTMLElement>("[data-file-picker]")!;
     press(dialog.querySelector<HTMLInputElement>("input")!, "Enter");
+    act(() => {
+      vi.runOnlyPendingTimers();
+    });
     expect(onRunCommand).toHaveBeenCalledTimes(1);
     expect(onRunCommand.mock.calls[0]?.[0]).toMatchObject({
       id: "View: Reload",

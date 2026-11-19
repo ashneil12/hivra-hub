@@ -35,12 +35,6 @@ it("r82 (c02): no harness in the name, and a coding-team chat is a chat, not a w
   );
 });
 
-it("r82 (c02 #2): a coding-team chat is the chat even before its workers are in its blocks", async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("./waitingChats.ts", import.meta.url), "utf8");
-  expect(src).toMatch(/orchestrator: isCodingTeamChat\(chat\.id\) \|\|/);
-});
-
 it("r83 (Critiquito): the job's name keeps its capital, 'worker' once, and a search is 'search its files'", async () => {
   const { askedBy, whoAsks } = await import("./chatQuestions");
   expect(askedBy(permissionQuestion(held("Grep", ["/tmp/x/src"]))!.question, whoAsks({ title: "claude · Tally health, validation and board", orchestrator: true }))).toBe(

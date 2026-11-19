@@ -166,6 +166,7 @@ function toolsFromBlocks(blocks: readonly Block[], now: number): CrewTreeTool[] 
   return tools;
 }
 
+// WP-122: native CLI children are a separate list on the parent thread. This tree stays the first-mate crew.
 function stepChildren(sessionId: string, blockId: string, steps: readonly AgentStep[] | undefined): CrewTreeNode[] {
   if (!Array.isArray(steps)) return [];
   const nodes: CrewTreeNode[] = [];

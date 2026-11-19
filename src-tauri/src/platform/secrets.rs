@@ -67,6 +67,19 @@ pub fn not_read() -> &'static str {
     }
 }
 
+/// WP-92: a store that won't let this process in, in the person's words. `keyring` reports that as `NoStorageAccess`;
+/// a Mac denies or unlocks interactively, and that refusal keeps its own sentence ("try again").
+pub fn locked() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Your Mac's keychain is locked. Unlock it and try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Your secret store is locked. Unlock it and try again."
+    }
+}
+
 pub fn not_removed() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -75,6 +88,19 @@ pub fn not_removed() -> &'static str {
     #[cfg(not(target_os = "macos"))]
     {
         "The secret store didn't remove the login."
+    }
+}
+
+/// WP-92: the person said no to the system prompt (or it could not be shown). Not "locked": nothing needs unlocking,
+/// the person only has to allow it when it asks again.
+pub fn denied() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Your Mac's keychain didn't let this app use that key. Click Allow when macOS asks, then try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Your secret store didn't let this app use that key. Allow it when it asks, then try again."
     }
 }
 
@@ -108,6 +134,10 @@ mod tests {
                 super::not_removed(),
                 "The Keychain didn't remove the login."
             );
+            assert_eq!(
+                super::locked(),
+                "Your Mac's keychain is locked. Unlock it and try again."
+            );
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -117,6 +147,8 @@ mod tests {
                 super::not_checked(),
                 super::not_read(),
                 super::not_removed(),
+                super::locked(),
+                super::denied(),
             ] {
                 assert!(!sentence.contains("Keychain"), "{sentence}");
             }

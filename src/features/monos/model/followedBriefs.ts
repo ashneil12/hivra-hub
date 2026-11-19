@@ -11,7 +11,7 @@
 // survives a restart, shows in task_status and in the tree (H4's cascade Stop sees Lead-under-leadership rows), and
 // reports through the H2 report-back path exactly once (its receipt). This module only decides; useFollowedBriefs acts.
 import { wasTurnInterrupted } from "../../sessions/model/inFlight";
-import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
+import { dequeueQueuedMessage, queueStatusOnEnqueue } from "../../sessions/model/messageQueue";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 import { isOwed, type Delegation } from "./delegations";
 import { unfinishedWorker } from "./workerStuck";
@@ -85,7 +85,7 @@ export function queueBriefForIdle(
         waitForIdle: true,
       },
     ],
-    queueStatus: chat.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: queueStatusOnEnqueue(chat),
   };
 }
 

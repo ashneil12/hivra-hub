@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +278,27 @@ pub struct SessionUpsert {
     /// WP-111: after privacy is switched off, this message and everything before it stay unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-177: set only by one step of a chat move (freeze, thaw, release, incoming, discard, activate, abort). An ordinary
+    /// save leaves it out, and the guard then refuses any save that drops a freeze or changes where the chat is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teleport: Option<TeleportWrite>,
+    /// WP-177: the next turn must carry the chat so far. Omitted on a save that does not owe one, which clears it.
+    #[serde(default)]
+    pub move_brief_owed: bool,
+    /// WP-177: the machine the chat was moved from, for the first turn's lead. Empty stores nothing.
+    #[serde(default)]
+    pub moved_from: Option<String>,
+    /// WP-134: the More agents entry this chat belongs to. Omitted on a save that does not know it, which keeps the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_agent_id: Option<String>,
+}
+
+/// WP-177: the step a chat move takes with this write, so the guard can check it is that step's own change only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeleportWrite {
+    pub move_id: String,
+    pub op: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +394,15 @@ pub struct SessionRecord {
     /// WP-111: messages at or before this id stay unread after privacy is switched off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-177: the next turn must carry the chat so far.
+    #[serde(default)]
+    pub move_brief_owed: bool,
+    /// WP-177: the machine the chat was moved from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
+    /// WP-134: the More agents entry this chat belongs to. Absent on a chat saved before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_agent_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -415,15 +445,27 @@ pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
     stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
 }
 
-#[tauri::command(async)]
-pub fn session_upsert(
-    store: State<'_, SessionStore>,
-    session: SessionUpsert,
-) -> Result<SessionSummary, String> {
-    validate_id(&session.id, "session")?;
-    if session.cwd.trim().is_empty() {
-        return Err("cwd is required".into());
+/// A More agents entry id worth storing. A harness id, a bad slug, or anything else stores nothing, so it cannot
+/// clear a real entry already on the row.
+fn stored_registry_agent(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let mut chars = value.chars();
+    let first = chars.next()?;
+    if value.len() > 48
+        || !(first.is_ascii_lowercase() || first.is_ascii_digit())
+        || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || crate::more_agents::FIRST_CLASS_IDS.contains(&value)
+    {
+        return None;
     }
+    Some(value.to_string())
+}
+
+/// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
+/// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
+/// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
+pub(crate) fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
+    validate_id(&session.id, "session")?;
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
             validate_id(provider_session_id, "provider session")?;
@@ -445,10 +487,88 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+#[tauri::command(async)]
+pub fn session_upsert(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+    blocks_unchanged: Option<bool>,
+) -> Result<SessionSummary, String> {
+    check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    let moved = session.teleport.is_some();
+    let id = session.id.clone();
+    let keep_blocks = blocks_unchanged.unwrap_or(false) && !moved;
+    let summary =
+        upsert_session_keeping(&conn, &session, keep_blocks).map_err(|e| e.to_string())?;
+    if moved {
+        // WP-177: every window replaces its copy of a chat a move just changed, and locks it if it is frozen or moved.
+        let _ = app.emit("teleport-row-changed", serde_json::json!({ "id": id }));
+    }
     Ok(summary)
+}
+
+/// Onboarding import (`chat_import.rs`): saves a chat brought in from Claude Code or Codex with the times it really
+/// had, so a thousand old chats don't all land on top as "just now". A chat already here is left exactly as it is and
+/// `false` comes back: importing twice never doubles a chat or overwrites anything said since.
+pub(crate) fn insert_imported_session(
+    conn: &Connection,
+    session: &SessionUpsert,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<bool, String> {
+    check_upsert(session)?;
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1",
+            params![session.id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    upsert_session(conn, session).map_err(|e| e.to_string())?;
+    let created_at = created_at.max(0);
+    let updated_at = updated_at.max(created_at);
+    conn.execute(
+        "UPDATE sessions SET created_at = ?2, updated_at = ?3 WHERE id = ?1",
+        params![session.id, created_at, updated_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Onboarding import: the provider conversations the app's own chats already hold, so an import skips them.
+#[tauri::command(async)]
+pub fn session_provider_ids(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT provider_session_id FROM sessions WHERE provider_session_id IS NOT NULL AND provider_session_id != ''")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+#[tauri::command(async)]
+pub fn session_import_new(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<bool, String> {
+    if session.teleport.is_some() {
+        return Err("An imported chat can't carry a move.".into());
+    }
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    insert_imported_session(&conn, &session, created_at, updated_at)
 }
 
 fn generated_image_paths(blocks: &Value) -> Vec<String> {
@@ -477,6 +597,16 @@ pub fn session_list_by_project(
     }
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     list_by_project(&conn, &cwd).map_err(|e| e.to_string())
+}
+
+/// The chats that have no folder (an import cleared it, docs/PORTABLE.md), newest first: the sidebar's "Needs a folder"
+/// group, so none of them is findable only through search.
+#[tauri::command(async)]
+pub fn session_list_folderless(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_folderless(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -568,9 +698,15 @@ fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, Str
         let Ok((id, cwd, harness, model, blocks_json)) = row else {
             continue;
         };
-        let Ok(blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+        let Ok(mut blocks) = serde_json::from_str::<Value>(&blocks_json) else {
             continue;
         };
+        // A first mate's transcript lives in mono_blocks and its blocks_json is `[]`.
+        if crate::mono_transcript::is_indexed(conn, &id).unwrap_or(false) {
+            if let Ok(user_blocks) = crate::mono_transcript::user_blocks(conn, &id) {
+                blocks = Value::Array(user_blocks);
+            }
+        }
         let turns = usage_turns(&blocks);
         if turns.is_empty() {
             continue;
@@ -677,6 +813,71 @@ pub fn session_get(
     Ok(record)
 }
 
+/// WP-177: the row a move hashes. Unlike `session_get`, tool output is not shortened, so the plan and the move agree.
+#[tauri::command(async)]
+pub fn session_get_for_move(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Option<SessionRecord>, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    get_session_for_move(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+const MOVE_NOTE_NOTICES: [&str; 5] = [
+    "teleport-frozen",
+    "teleport-incoming",
+    "teleport-aborted",
+    "teleport-release-owed",
+    "teleport-freeze-asked",
+];
+
+/// Chats whose blocks still carry a move note. A mention of the word in a message is not a note.
+pub(crate) fn chat_ids_with_move_notes(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, blocks_json FROM sessions
+         WHERE inbox_ask IS NULL
+           AND (
+             blocks_json LIKE '%\"teleport-frozen\"%'
+             OR blocks_json LIKE '%\"teleport-incoming\"%'
+             OR blocks_json LIKE '%\"teleport-aborted\"%'
+             OR blocks_json LIKE '%\"teleport-release-owed\"%'
+             OR blocks_json LIKE '%\"teleport-freeze-asked\"%'
+           )
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, raw) = row?;
+        let Ok(blocks) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let Some(list) = blocks.as_array() else {
+            continue;
+        };
+        let carries = list.iter().any(|block| {
+            block
+                .get("notice")
+                .and_then(Value::as_str)
+                .is_some_and(|notice| MOVE_NOTE_NOTICES.contains(&notice))
+        });
+        if carries {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// WP-177: ids recovery scans, including a chat the sidebar hides because it is in the trash.
+#[tauri::command(async)]
+pub fn session_list_moved(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    chat_ids_with_move_notes(&conn).map_err(|error| error.to_string())
+}
+
 /// WP-111: ids of chats memory must not read.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -694,7 +895,7 @@ pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<Privat
 
 fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
     let mut statement = conn.prepare(
-        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 ORDER BY id ASC",
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 OR (private_boundary_id IS NOT NULL AND private_boundary_id != '') ORDER BY id ASC",
     )?;
     let rows = statement.query_map([], |row| {
         let provider: Option<String> = row.get(1)?;
@@ -983,10 +1184,20 @@ pub(crate) fn purge_chat(
     conn: &Connection,
     session_id: &str,
 ) -> Result<(), String> {
+    purge_chat_with(conn, session_id, |paths| {
+        crate::fs::delete_generated_images_sync(app, paths)
+    })
+}
+
+fn purge_chat_with(
+    conn: &Connection,
+    session_id: &str,
+    remove_images: impl FnOnce(&[String]) -> Result<crate::fs::GeneratedImageDeletion, String>,
+) -> Result<(), String> {
     let image_paths = collect_chat_image_paths(conn, session_id)?;
     delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
+        if let Err(error) = remove_images(&image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
@@ -1063,6 +1274,34 @@ pub(crate) fn set_private(
         params![session_id, i64::from(private_chat), boundary],
     )?;
     Ok(())
+}
+
+/// WP-134: copy one browser link onto the row, and only while the row has none. A bad id or a missing chat writes
+/// nothing and is not an error, so the caller can drop it. A database error is returned, so the caller can retry.
+#[tauri::command(async)]
+pub fn session_adopt_registry_agent(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    agent_id: String,
+) -> Result<bool, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    adopt_registry_agent(&conn, &session_id, &agent_id).map_err(|error| error.to_string())
+}
+
+pub(crate) fn adopt_registry_agent(
+    conn: &Connection,
+    session_id: &str,
+    agent_id: &str,
+) -> rusqlite::Result<bool> {
+    let Some(agent) = stored_registry_agent(Some(agent_id)) else {
+        return Ok(false);
+    };
+    let changed = conn.execute(
+        "UPDATE sessions SET registry_agent_id = ?2 WHERE id = ?1 AND registry_agent_id IS NULL",
+        params![session_id, agent],
+    )?;
+    Ok(changed > 0)
 }
 
 #[tauri::command(async)]
@@ -1210,7 +1449,7 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
 }
 
 /// Add `column` to `table` when it is absent.
-fn ensure_table_column(
+pub(crate) fn ensure_table_column(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -1251,6 +1490,33 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
         &format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"),
         [],
     )?;
+    Ok(())
+}
+
+/// The table of what an import's file named for a cleared folder, with every column. A table made by an earlier build
+/// (before `blocked`, `project_id` or `rest` existed, or on the fly before it was a migration) gets the missing ones.
+fn ensure_imported_chat_folders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    for (column, definition) in [
+        ("blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("project_id", "TEXT"),
+        ("rest", "TEXT"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('imported_chat_folders') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE imported_chat_folders ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -1378,6 +1644,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("private_boundary_id", "TEXT"),
         // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
         ("goal_json", "TEXT"),
+        // WP-177: the next turn carries the chat so far, and the lead names where it came from.
+        ("move_brief_owed", "INTEGER NOT NULL DEFAULT 0"),
+        ("moved_from", "TEXT"),
+        // WP-134: the More agents entry. Old rows stay null, and an older build still opens this database.
+        ("registry_agent_id", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -1558,6 +1829,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 21 {
+        // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table. (Its columns are
+        // kept whole by `ensure_imported_chat_folders` below, whichever build made the table first.)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    ensure_imported_chat_folders(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1612,11 +1893,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
     crate::automations::ensure_tables(conn)?;
+    // WP-128: one-time schedules. Not a numbered migration: an older build never reads the table.
+    crate::one_time_schedule::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-159: the programme board. An older build never reads this table.
+    crate::programme::ensure_tables(conn)?;
     // WP-74: the task and doc search index, after both tables exist.
     crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
@@ -1624,16 +1909,25 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Hivra WP-14: steering messages and decisions.
     crate::steering::ensure_tables(conn)?;
     crate::decisions::ensure_tables(conn)?;
+    // Hivra WP-92: the secret vault's metadata. Values never live here.
+    crate::secrets::ensure_tables(conn)?;
+    // A request left `saving` by a crash between the keychain write and the row update reopens at startup.
+    let _ = crate::secrets::reopen_stale(conn, now_millis());
     crate::autopilot::ensure_tables(conn)?;
     crate::pr_watch::ensure_tables(conn)?;
     crate::delivery::ensure_tables(conn)?; // Hivra WP-12
     crate::delivery_gate::ensure_tables(conn)?; // Hivra WP-81
     crate::crew::ensure_tables(conn)?; // Hivra WP-13
+    crate::spend_ledger::ensure_table(conn)?; // WP-176
+    crate::firstmate::checker_family::ensure_tables(conn)?; // SC-5: the checker's family rule
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
+    crate::fanout_checkpoint::ensure_tables(conn)?; // Hivra WP-172
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-157: the work log. In place, so an older build still opens this file.
+    crate::work_log::ensure_tables(conn)?;
     // WP-86: commit attribution. In place, so an older build still opens this file.
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
@@ -1759,9 +2053,479 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+const TELEPORT_CONFLICT: &str = "teleport-conflict";
+const TELEPORT_REFUSED: &str = "teleport-refused";
+
+fn blocks_of(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+
+fn notice_of(block: &Value) -> &str {
+    block.get("notice").and_then(Value::as_str).unwrap_or("")
+}
+
+fn id_of(block: &Value) -> &str {
+    block.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+fn ids_with_notice(blocks: &Value, notice: &str) -> Vec<String> {
+    blocks_of(blocks)
+        .iter()
+        .filter(|block| notice_of(block) == notice)
+        .map(|block| id_of(block).to_string())
+        .collect()
+}
+
+/// Where the chat is away: the id of its latest move-away marker, when no move back came after it. None when it is here.
+fn moved_away(blocks: &Value) -> Option<String> {
+    for block in blocks_of(blocks).iter().rev() {
+        match notice_of(block) {
+            "teleported-back" => return None,
+            "teleported" => return Some(id_of(block).to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// WP-177: checks a move step's result. An ordinary save does not come here: `prepare_teleport_blocks` copies the stored
+/// move notes onto it, so a quit or a stale window cannot change one. A step may change only the notes that step owns.
+/// A refusal names its reason with a prefix the webview reads.
+pub(crate) fn teleport_guard(
+    previous: &Value,
+    next: &Value,
+    write: Option<&TeleportWrite>,
+) -> Result<(), String> {
+    let stored_frozen = ids_with_notice(previous, "teleport-frozen");
+    let next_frozen = ids_with_notice(next, "teleport-frozen");
+    let stored_away = moved_away(previous);
+    let next_away = moved_away(next);
+    let notes_same = |except: &str| {
+        [
+            "teleport-freeze-asked",
+            "teleport-incoming",
+            "teleport-release-owed",
+            "teleport-aborted",
+        ]
+        .into_iter()
+        .filter(|notice| *notice != except)
+        .all(|notice| ids_with_notice(previous, notice) == ids_with_notice(next, notice))
+    };
+    let Some(write) = write else {
+        if stored_frozen.iter().any(|id| !next_frozen.contains(id)) {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would drop a chat move's freeze, so it was refused"
+            ));
+        }
+        if next_frozen.iter().any(|id| !stored_frozen.contains(id)) {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would add a chat move's freeze, so it was refused"
+            ));
+        }
+        if stored_away != next_away {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would change whether the chat is on another machine, so it was refused"
+            ));
+        }
+        if !notes_same("") {
+            let notes = [
+                "teleport-freeze-asked",
+                "teleport-incoming",
+                "teleport-release-owed",
+                "teleport-aborted",
+            ];
+            let dropped = notes.iter().copied().any(|notice| {
+                let next_ids = ids_with_notice(next, notice);
+                ids_with_notice(previous, notice)
+                    .iter()
+                    .any(|id| !next_ids.contains(id))
+            });
+            if dropped {
+                return Err(format!(
+                    "{TELEPORT_REFUSED}: this save would drop a chat move's note, so it was refused"
+                ));
+            }
+            // No ordinary save plants a note. A freeze ask arrives only on its own step, so a stale copy cannot put a
+            // cleared ask back and recovery cannot run it.
+            let added = notes.iter().copied().any(|notice| {
+                let stored_ids = ids_with_notice(previous, notice);
+                ids_with_notice(next, notice)
+                    .iter()
+                    .any(|id| !stored_ids.contains(id))
+            });
+            if added {
+                return Err(format!(
+                    "{TELEPORT_REFUSED}: this save would add a chat move's note, so it was refused"
+                ));
+            }
+        }
+        return Ok(());
+    };
+    let frozen_id = format!("teleport-frozen-{}", write.move_id);
+    let incoming_id = format!("teleport-incoming-{}", write.move_id);
+    let aborted_id = format!("teleport-aborted-{}", write.move_id);
+    let back_id = format!("teleported-back-{}", write.move_id);
+    let stored_incoming = ids_with_notice(previous, "teleport-incoming");
+    let next_incoming = ids_with_notice(next, "teleport-incoming");
+    let same_frozen = stored_frozen == next_frozen;
+    let refused = |what: &str| Err(format!("{TELEPORT_REFUSED}: {what}"));
+    let conflict = |what: &str| Err(format!("{TELEPORT_CONFLICT}: {what}"));
+    match write.op.as_str() {
+        "freeze" => {
+            if !stored_frozen.is_empty() || stored_away.is_some() {
+                return conflict("another move or a resume already holds this chat");
+            }
+            if next_frozen != [frozen_id] || next_away.is_some() {
+                return refused("a freeze must only add its own freeze");
+            }
+            Ok(())
+        }
+        "thaw" => {
+            let expected: Vec<String> = stored_frozen
+                .iter()
+                .filter(|id| **id != frozen_id)
+                .cloned()
+                .collect();
+            if next_frozen != expected || next_away != stored_away {
+                return refused("a thaw must only remove its own freeze");
+            }
+            Ok(())
+        }
+        "release" => {
+            if !stored_frozen.contains(&frozen_id) || stored_away.is_some() {
+                return conflict("this move did not freeze the chat");
+            }
+            if !next_frozen.is_empty() || next_away.is_none() {
+                return refused("a release must drop the freeze and mark the chat moved");
+            }
+            Ok(())
+        }
+        "incoming" => {
+            if stored_away.is_none() {
+                return conflict(
+                    "this chat is not moved away from here, so a copy would overwrite live work",
+                );
+            }
+            if stored_incoming.iter().any(|id| *id != incoming_id) {
+                return conflict("another move's copy is already stored for this chat");
+            }
+            if !next_incoming.contains(&incoming_id) || !same_frozen || next_away != stored_away {
+                return refused("a copy must only add its own incoming block");
+            }
+            Ok(())
+        }
+        "discard" => {
+            let expected: Vec<String> = stored_incoming
+                .iter()
+                .filter(|id| **id != incoming_id)
+                .cloned()
+                .collect();
+            if next_incoming != expected || !same_frozen || next_away != stored_away {
+                return refused("a discard must only remove its own copy");
+            }
+            Ok(())
+        }
+        "activate" => {
+            if !stored_incoming.contains(&incoming_id) || stored_away.is_none() {
+                return conflict("no copy of this chat is stored here to open");
+            }
+            let returned = blocks_of(next).iter().any(|block| id_of(block) == back_id);
+            if !returned
+                || next_incoming.contains(&incoming_id)
+                || next_away.is_some()
+                || !same_frozen
+            {
+                return refused("opening a copy must mark the chat back here and drop its copy");
+            }
+            Ok(())
+        }
+        "abort" => {
+            if blocks_of(previous)
+                .iter()
+                .any(|block| id_of(block) == back_id)
+            {
+                return conflict("this copy was already opened here");
+            }
+            let aborted = blocks_of(next)
+                .iter()
+                .any(|block| id_of(block) == aborted_id);
+            if !aborted
+                || next_incoming.contains(&incoming_id)
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("an abort must refuse its own move and drop its own copy");
+            }
+            Ok(())
+        }
+        "freeze-ask" => {
+            let ask_id = format!("teleport-freeze-asked-{}", write.move_id);
+            let mut expected = ids_with_notice(previous, "teleport-freeze-asked");
+            if !expected.iter().any(|id| id == &ask_id) {
+                expected.push(ask_id);
+            }
+            if ids_with_notice(next, "teleport-freeze-asked") != expected
+                || !notes_same("teleport-freeze-asked")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("a freeze ask must only add its own note");
+            }
+            Ok(())
+        }
+        "clear-freeze-ask" => {
+            let ask_id = format!("teleport-freeze-asked-{}", write.move_id);
+            let expected: Vec<String> = ids_with_notice(previous, "teleport-freeze-asked")
+                .into_iter()
+                .filter(|id| id != &ask_id)
+                .collect();
+            if ids_with_notice(next, "teleport-freeze-asked") != expected
+                || !notes_same("teleport-freeze-asked")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("clearing a freeze ask must only remove its own note");
+            }
+            Ok(())
+        }
+        "settle" => {
+            let owed_id = format!("teleport-release-owed-{}", write.move_id);
+            let expected: Vec<String> = ids_with_notice(previous, "teleport-release-owed")
+                .into_iter()
+                .filter(|id| id != &owed_id)
+                .collect();
+            if ids_with_notice(next, "teleport-release-owed") != expected
+                || !notes_same("teleport-release-owed")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("settling a release must only remove its own note");
+            }
+            Ok(())
+        }
+        _ => refused("this chat move step is not known"),
+    }
+}
+
+fn is_owned_note(block: &Value) -> bool {
+    matches!(
+        notice_of(block),
+        "teleport-frozen"
+            | "teleport-freeze-asked"
+            | "teleport-incoming"
+            | "teleport-release-owed"
+            | "teleport-aborted"
+            | "teleported"
+            | "teleported-back"
+    )
+}
+
+fn block_by_id<'a>(blocks: &'a [Value], id: &str) -> Option<&'a Value> {
+    blocks.iter().find(|block| id_of(block) == id)
+}
+
+fn push_owned(blocks: &mut Vec<Value>, note: &Value) {
+    let id = id_of(note);
+    if !id.is_empty() && blocks.iter().any(|block| id_of(block) == id) {
+        return;
+    }
+    blocks.push(note.clone());
+}
+
+fn require_note<'a>(blocks: &'a [Value], id: &str) -> Result<&'a Value, String> {
+    block_by_id(blocks, id)
+        .ok_or_else(|| format!("{TELEPORT_REFUSED}: this chat move step is missing its note"))
+}
+
+/// An ordinary save keeps every stored move note, all of its fields, and writes the rest of the incoming row.
+fn with_stored_move_notes(previous: &Value, incoming: &Value) -> Value {
+    let Some(incoming_blocks) = incoming.as_array() else {
+        return incoming.clone();
+    };
+    let mut blocks: Vec<Value> = incoming_blocks
+        .iter()
+        .filter(|block| !is_owned_note(block))
+        .cloned()
+        .collect();
+    for note in blocks_of(previous)
+        .iter()
+        .filter(|block| is_owned_note(block))
+    {
+        blocks.push(note.clone());
+    }
+    Value::Array(blocks)
+}
+
+/// A move step changes only the notes that step owns, on the stored row as it is. A reply saved after the step read
+/// the row is still there. Release and activate replace the transcript: that is the body the step sends.
+fn apply_move_step(
+    previous: &Value,
+    incoming: &Value,
+    write: &TeleportWrite,
+) -> Result<Value, String> {
+    let stored = blocks_of(previous);
+    let incoming_blocks = blocks_of(incoming);
+    let move_id = write.move_id.as_str();
+    let frozen_id = format!("teleport-frozen-{move_id}");
+    let incoming_id = format!("teleport-incoming-{move_id}");
+    let ask_id = format!("teleport-freeze-asked-{move_id}");
+    let owed_id = format!("teleport-release-owed-{move_id}");
+    let aborted_id = format!("teleport-aborted-{move_id}");
+    let back_id = format!("teleported-back-{move_id}");
+    let refused = |what: &str| Err(format!("{TELEPORT_REFUSED}: {what}"));
+    let blocks = match write.op.as_str() {
+        "freeze" => {
+            let freeze = require_note(incoming_blocks, &frozen_id)?;
+            let mut next = stored.to_vec();
+            push_owned(&mut next, freeze);
+            next
+        }
+        "thaw" => {
+            if !stored.iter().any(|block| id_of(block) == frozen_id) {
+                return refused("a thaw must only remove its own freeze");
+            }
+            stored
+                .iter()
+                .filter(|block| id_of(block) != frozen_id)
+                .cloned()
+                .collect()
+        }
+        "release" => {
+            let marker = incoming_blocks
+                .iter()
+                .find(|block| notice_of(block) == "teleported")
+                .ok_or_else(|| {
+                    format!(
+                        "{TELEPORT_REFUSED}: a release must drop the freeze and mark the chat moved"
+                    )
+                })?;
+            let mut next: Vec<Value> = incoming_blocks
+                .iter()
+                .filter(|block| !is_owned_note(block))
+                .cloned()
+                .collect();
+            for note in stored
+                .iter()
+                .filter(|block| is_owned_note(block) && notice_of(block) != "teleport-frozen")
+            {
+                next.push(note.clone());
+            }
+            push_owned(&mut next, marker);
+            next
+        }
+        "incoming" => {
+            let copy = require_note(incoming_blocks, &incoming_id)?;
+            let mut next: Vec<Value> = stored
+                .iter()
+                .filter(|block| id_of(block) != ask_id)
+                .cloned()
+                .collect();
+            push_owned(&mut next, copy);
+            next
+        }
+        "discard" => stored
+            .iter()
+            .filter(|block| id_of(block) != incoming_id)
+            .cloned()
+            .collect(),
+        "activate" => {
+            // A missing back marker is the guard's call: no stored copy is a conflict, a bad open is a refusal.
+            let back = block_by_id(incoming_blocks, &back_id);
+            let mut next: Vec<Value> = incoming_blocks
+                .iter()
+                .filter(|block| !is_owned_note(block))
+                .cloned()
+                .collect();
+            let mut seen: Vec<String> = next
+                .iter()
+                .map(|block| id_of(block).to_string())
+                .filter(|id| !id.is_empty())
+                .collect();
+            for block in stored.iter().filter(|block| !is_owned_note(block)) {
+                let id = id_of(block);
+                if id.is_empty() || seen.iter().any(|seen_id| seen_id == id) {
+                    continue;
+                }
+                seen.push(id.to_string());
+                next.push(block.clone());
+            }
+            for note in stored
+                .iter()
+                .filter(|block| is_owned_note(block) && id_of(block) != incoming_id)
+            {
+                next.push(note.clone());
+            }
+            if let Some(back) = back {
+                push_owned(&mut next, back);
+            }
+            if let Some(owed) = block_by_id(incoming_blocks, &owed_id) {
+                push_owned(&mut next, owed);
+            }
+            next
+        }
+        "abort" => {
+            let aborted = require_note(incoming_blocks, &aborted_id)?;
+            let mut next: Vec<Value> = stored
+                .iter()
+                .filter(|block| id_of(block) != incoming_id && id_of(block) != ask_id)
+                .cloned()
+                .collect();
+            push_owned(&mut next, aborted);
+            next
+        }
+        "freeze-ask" => {
+            let ask = require_note(incoming_blocks, &ask_id)?;
+            let mut next = stored.to_vec();
+            push_owned(&mut next, ask);
+            next
+        }
+        "clear-freeze-ask" => stored
+            .iter()
+            .filter(|block| id_of(block) != ask_id)
+            .cloned()
+            .collect(),
+        "settle" => stored
+            .iter()
+            .filter(|block| id_of(block) != owed_id)
+            .cloned()
+            .collect(),
+        _ => return refused("this chat move step is not known"),
+    };
+    let next = Value::Array(blocks);
+    teleport_guard(previous, &next, Some(write))?;
+    Ok(next)
+}
+
+fn prepare_teleport_blocks(
+    previous: &Value,
+    incoming: &Value,
+    write: Option<&TeleportWrite>,
+) -> Result<Value, String> {
+    match write {
+        // Away, the transcript, the provider session and the queue already left with the release. An ordinary save
+        // keeps that row's blocks. It does not put a pre-move copy back.
+        None if moved_away(previous).is_some() => Ok(previous.clone()),
+        None => Ok(with_stored_move_notes(previous, incoming)),
+        Some(write) => apply_move_step(previous, incoming, write),
+    }
+}
+
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
+) -> rusqlite::Result<SessionSummary> {
+    upsert_session_keeping(conn, session, false)
+}
+
+/// The message `session_upsert` answers when the webview kept the blocks but the store has no row to keep them from.
+const BLOCKS_MISSING: &str = "blocks-missing: the chat isn't stored yet, send its blocks";
+
+/// `keep_blocks`: the webview sent no blocks because the ones it last saved are unchanged (a queue edit, a rename, a
+/// model switch). The stored transcript is kept byte for byte: nothing is merged, restored or written again.
+fn upsert_session_keeping(
+    conn: &Connection,
+    session: &SessionUpsert,
+    keep_blocks: bool,
 ) -> rusqlite::Result<SessionSummary> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
@@ -1776,19 +2540,50 @@ pub(crate) fn upsert_session(
     let previous_blocks: Option<Value> = existing
         .as_ref()
         .and_then(|(_, _, raw, _, _, _)| serde_json::from_str(raw).ok());
-    let blocks = crate::artifacts::retain_existing_cards(conn, &session.blocks)?;
-    // Loaded transcripts omit large tool output; never let a save erase it.
-    let blocks = match &previous_blocks {
-        Some(previous) => match crate::tool_detail::restore_details(previous, &blocks) {
-            Cow::Owned(restored) => Cow::Owned(restored),
-            Cow::Borrowed(_) => blocks,
-        },
-        None => blocks,
+    let keep_blocks = keep_blocks && session.teleport.is_none();
+    let prepared_blocks: Value;
+    let (blocks, blocks_json): (Cow<'_, Value>, String) = if keep_blocks {
+        let (Some((_, _, raw, _, _, _)), Some(previous)) = (&existing, &previous_blocks) else {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                BLOCKS_MISSING.into(),
+            ));
+        };
+        (Cow::Borrowed(previous), raw.clone())
+    } else {
+        prepared_blocks = match &previous_blocks {
+            Some(previous) => {
+                prepare_teleport_blocks(previous, &session.blocks, session.teleport.as_ref())
+                    .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?
+            }
+            None => session.blocks.clone(),
+        };
+        let blocks = crate::artifacts::retain_existing_cards(conn, &prepared_blocks)?;
+        // Loaded transcripts omit large tool output; never let a save erase it.
+        let blocks = match &previous_blocks {
+            Some(previous) => match crate::tool_detail::restore_details(previous, &blocks) {
+                Cow::Owned(restored) => Cow::Owned(restored),
+                Cow::Borrowed(_) => blocks,
+            },
+            None => blocks,
+        };
+        let blocks_json = serde_json::to_string(blocks.as_ref())
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        (blocks, blocks_json)
     };
-    let blocks_json = serde_json::to_string(blocks.as_ref())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let queued_messages_json = serde_json::to_string(&session.queued_messages)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    // A chat that is away keeps the queue and the provider session the release left. The copy a quit still holds is older.
+    let away_ordinary = session.teleport.is_none()
+        && previous_blocks
+            .as_ref()
+            .is_some_and(|blocks| moved_away(blocks).is_some());
+    let queued_messages_json = if away_ordinary {
+        existing
+            .as_ref()
+            .map(|(_, _, _, _, _, stored)| stored.clone())
+            .unwrap_or_else(|| "[]".to_string())
+    } else {
+        serde_json::to_string(&session.queued_messages)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+    };
     let linked_work_item_json = session
         .linked_work_item
         .as_ref()
@@ -1800,11 +2595,21 @@ pub(crate) fn upsert_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let provider_session_id = session
-        .provider_session_id
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty());
+    let provider_session_id = if away_ordinary {
+        conn.query_row(
+            "SELECT provider_session_id FROM sessions WHERE id = ?1",
+            params![session.id],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    } else {
+        session
+            .provider_session_id
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
     let provider_account_id = session
         .provider_account_id
         .as_ref()
@@ -1837,8 +2642,8 @@ pub(crate) fn upsert_session(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    let has_user_message = has_user_block(&session.blocks);
-    let is_draft = has_draft_block(&session.blocks);
+    let has_user_message = has_user_block(blocks.as_ref());
+    let is_draft = has_draft_block(blocks.as_ref());
 
     let created_at = existing
         .as_ref()
@@ -1869,8 +2674,8 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json,
-           private_chat, private_boundary_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+           private_chat, private_boundary_id, move_brief_owed, moved_from, registry_agent_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1894,7 +2699,10 @@ pub(crate) fn upsert_session(
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
            sidebar_hidden = excluded.sidebar_hidden,
-           goal_json = excluded.goal_json",
+           goal_json = excluded.goal_json,
+           move_brief_owed = excluded.move_brief_owed,
+           moved_from = excluded.moved_from,
+           registry_agent_id = COALESCE(excluded.registry_agent_id, sessions.registry_agent_id)",
         params![
             session.id,
             session.cwd,
@@ -1923,10 +2731,18 @@ pub(crate) fn upsert_session(
             goal_json(session.goal.as_ref()),
             i64::from(session.private_chat),
             stored_boundary(session.private_boundary_id.as_deref()),
+            i64::from(session.move_brief_owed),
+            session
+                .moved_from
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(200).collect::<String>()),
+            stored_registry_agent(session.registry_agent_id.as_deref()),
         ],
     )?;
 
-    remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
+    remember_worker_from_blocks(conn, &session.id, blocks.as_ref())?;
     Ok(SessionSummary {
         sidebar_hidden: session.sidebar_hidden,
         private_chat: session.private_chat,
@@ -1938,7 +2754,7 @@ pub(crate) fn upsert_session(
         model: session.model.clone(),
         runtime_mode: session.runtime_mode.clone(),
         title: session.title.clone(),
-        provider_session_id: provider_session_id.map(str::to_owned),
+        provider_session_id: provider_session_id.clone(),
         branch: branch.map(str::to_owned),
         worktree_cwd: worktree_cwd.map(str::to_owned),
         worktree_removed: session.worktree_removed,
@@ -2294,8 +3110,22 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
 }
 
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, cwd, "AND has_user_message = 1")
+}
+
+/// Every chat that has no folder, with or without a message of its own: an imported chat that was only a draft or a
+/// brief still has to be findable in "Needs a folder".
+fn list_folderless(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, "", "")
+}
+
+fn list_chats_in(
+    conn: &Connection,
+    cwd: &str,
+    message_filter: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
@@ -2303,12 +3133,12 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
+           {message_filter}
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
@@ -2397,12 +3227,18 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
 }
 
 /// Mirrors the sidebar's notion of a listable session: a transcript that the
-/// user has actually said something in.
+/// user has actually said something in, or a chat a move has marked (the marker
+/// row has no user message, and the project list is what the sidebar and launch
+/// recovery read).
 fn has_user_block(blocks: &Value) -> bool {
     blocks.as_array().is_some_and(|blocks| {
-        blocks
-            .iter()
-            .any(|block| block.get("role").and_then(Value::as_str) == Some("user"))
+        blocks.iter().any(|block| {
+            block.get("role").and_then(Value::as_str) == Some("user")
+                || block
+                    .get("notice")
+                    .and_then(Value::as_str)
+                    .is_some_and(|notice| notice.starts_with("teleport"))
+        })
     })
 }
 
@@ -2475,6 +3311,11 @@ fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> 
     )?;
     tx.execute(
         "DELETE FROM orchestration_sidebar WHERE lead_id = ?1",
+        [session_id],
+    )?;
+    // What an import's file named for this chat's folder goes with the chat.
+    tx.execute(
+        "DELETE FROM imported_chat_folders WHERE session_id = ?1",
         [session_id],
     )?;
     if let Some(parent) = parent.filter(|id| id != session_id) {
@@ -2590,22 +3431,36 @@ pub(crate) fn get_session(
     conn: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<SessionRecord>> {
-    get_session_record(conn, session_id, true)
+    get_session_record(conn, session_id, true, false)
 }
 
 pub(crate) fn get_session_metadata(
     conn: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<SessionRecord>> {
-    get_session_record(conn, session_id, false)
+    get_session_record(conn, session_id, false, false)
+}
+
+/// WP-177: the row a move reads. The sidebar read hides a trashed chat; recovery still has to see its notes.
+pub(crate) fn get_session_for_move(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Option<SessionRecord>> {
+    get_session_record(conn, session_id, true, true)
 }
 
 fn get_session_record(
     conn: &Connection,
     session_id: &str,
     with_blocks: bool,
+    include_trashed: bool,
 ) -> rusqlite::Result<Option<SessionRecord>> {
     let blocks = if with_blocks { "blocks_json" } else { "'[]'" };
+    let trash_filter = if include_trashed {
+        ""
+    } else {
+        "AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+    };
     conn.query_row(
         &format!(
             "SELECT id, cwd, harness, model, model_settings, runtime_mode, title,
@@ -2613,10 +3468,11 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                goal_json, archived, private_chat, private_boundary_id
+                goal_json, archived, private_chat, private_boundary_id,
+                move_brief_owed, moved_from, registry_agent_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
-           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+           {trash_filter}"
         ),
         params![session_id],
         |row| {
@@ -2668,6 +3524,15 @@ fn get_session_record(
                 archived: row.get::<_, i64>(23)? != 0,
                 private_chat: row.get::<_, i64>(24)? != 0,
                 private_boundary_id: boundary_for_read(row.get(25)?),
+                move_brief_owed: row.get::<_, i64>(26)? != 0,
+                moved_from: {
+                    let raw: Option<String> = row.get(27)?;
+                    raw.map(|value| value.trim().chars().take(200).collect::<String>())
+                        .filter(|value| !value.is_empty())
+                },
+                registry_agent_id: stored_registry_agent(
+                    row.get::<_, Option<String>>(28)?.as_deref(),
+                ),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2869,6 +3734,42 @@ mod tests {
     }
 
     #[test]
+    fn usage_rows_include_a_first_mate_whose_transcript_is_in_mono_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut mono = sample("mono", "/tmp/a", "Mono");
+        mono.blocks = json!([
+            {
+                "id": "m1",
+                "role": "user",
+                "text": "mono prompt that must not travel",
+                "turnMetrics": { "inputTokens": 7, "outputTokens": 2, "costUsd": 0.01 }
+            },
+            { "id": "m2", "role": "assistant", "text": "reply" }
+        ]);
+        upsert_session(&conn, &mono).unwrap();
+        crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'mono'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "mono");
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 7);
+        assert!(!serde_json::to_string(&rows[0].blocks)
+            .unwrap()
+            .contains("must not travel"));
+    }
+
+    #[test]
     fn usage_rows_skip_a_trashed_chat() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
@@ -2989,6 +3890,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    #[test]
+    fn an_imported_chat_keeps_its_own_times_and_a_second_import_changes_nothing() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("imp-claude-s1", "/work/app", "Fix the login");
+        chat.blocks = json!([{ "id": "u1", "role": "user", "text": "Please fix the login" }]);
+        assert!(insert_imported_session(&conn, &chat, 1_000, 2_000).unwrap());
+        let (created, updated): (i64, i64) = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM sessions WHERE id = 'imp-claude-s1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((created, updated), (1_000, 2_000));
+        chat.title = "Changed".into();
+        assert!(!insert_imported_session(&conn, &chat, 5, 6).unwrap());
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM sessions WHERE id = 'imp-claude-s1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Fix the login");
+    }
+
+    #[test]
+    fn a_purge_with_one_outside_image_path_still_removes_the_chats_own_images() {
+        let data =
+            std::env::temp_dir().join(format!("hivra purge outside {}", uuid::Uuid::new_v4()));
+        let images = data.join("generated-images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("chat-images", "/tmp/project", "Pictures");
+        // The refused path is the chat's first image, so a delete that stops at it removes nothing.
+        chat.blocks = json!([
+            { "id": "i0", "role": "image", "image": { "path": outsider.to_string_lossy() } },
+            { "id": "i1", "role": "image", "image": { "path": first.to_string_lossy() } },
+            { "id": "i2", "role": "image", "image": { "path": second.to_string_lossy() } },
+        ]);
+        upsert_session(&conn, &chat).unwrap();
+
+        let mut report = None;
+        purge_chat_with(&conn, "chat-images", |paths| {
+            let done = crate::fs::delete_generated_images_in(&images, paths)?;
+            report = Some(done.skipped);
+            Ok(done)
+        })
+        .unwrap();
+
+        assert_eq!(report, Some(1));
+        assert!(get_session(&conn, "chat-images").unwrap().is_none());
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
     fn sample(id: &str, cwd: &str, title: &str) -> SessionUpsert {
         SessionUpsert {
             sidebar_hidden: false,
@@ -3014,6 +3982,10 @@ mod tests {
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            teleport: None,
+            move_brief_owed: false,
+            moved_from: None,
+            registry_agent_id: None,
         }
     }
 
@@ -3060,6 +4032,117 @@ mod tests {
             get_session_metadata(&conn, "worker").unwrap().unwrap().goal,
             Some(goal)
         );
+    }
+
+    /// A row written before `registry_agent_id` existed still loads, and the new column stays empty.
+    #[test]
+    fn a_session_written_before_the_registry_column_still_loads() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute("ALTER TABLE sessions DROP COLUMN registry_agent_id", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, cwd, harness, model, model_settings, runtime_mode, title,
+                blocks_json, created_at, updated_at
+             ) VALUES (
+                'old-chat', '/tmp/a', 'claude', 'm', '{}', 'supervised', 'Before',
+                '[{\"id\":\"b1\",\"role\":\"user\",\"text\":\"hi\"}]', 5, 6
+             )",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let loaded = get_session(&conn, "old-chat").unwrap().unwrap();
+        assert_eq!(loaded.title, "Before");
+        assert_eq!(loaded.harness, "claude");
+        assert_eq!(loaded.created_at, 5);
+        assert_eq!(loaded.updated_at, 6);
+        assert!(loaded.registry_agent_id.is_none());
+        // A later save that names no entry must not invent one.
+        upsert_session(&conn, &sample("old-chat", "/tmp/a", "Before")).unwrap();
+        assert!(get_session(&conn, "old-chat")
+            .unwrap()
+            .unwrap()
+            .registry_agent_id
+            .is_none());
+    }
+
+    /// The entry id is stored with the chat. A later save that omits it keeps it. A harness id or a bad slug does not.
+    #[test]
+    fn an_upsert_stores_the_registry_entry_and_a_later_save_keeps_it() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = sample("chat-1", "/tmp/a", "Copilot");
+        session.registry_agent_id = Some("my-copilot".into());
+        upsert_session(&conn, &session).unwrap();
+        let stored = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(stored.registry_agent_id.as_deref(), Some("my-copilot"));
+        assert_eq!(stored.harness, "cursor");
+        session.registry_agent_id = None;
+        session.title = "Renamed".into();
+        upsert_session(&conn, &session).unwrap();
+        let stored = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(stored.registry_agent_id.as_deref(), Some("my-copilot"));
+        assert_eq!(stored.title, "Renamed");
+        for bad in ["claude", "../x", "Not A Slug", ""] {
+            session.registry_agent_id = Some(bad.into());
+            upsert_session(&conn, &session).unwrap();
+            assert_eq!(
+                get_session(&conn, "chat-1")
+                    .unwrap()
+                    .unwrap()
+                    .registry_agent_id
+                    .as_deref(),
+                Some("my-copilot"),
+                "{bad}"
+            );
+        }
+        // A value planted in the row that is not a slug reads as none, and the rest of the row still loads.
+        conn.execute(
+            "UPDATE sessions SET registry_agent_id = 'Not A Slug' WHERE id = 'chat-1'",
+            [],
+        )
+        .unwrap();
+        let planted = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(planted.registry_agent_id.is_none());
+        assert_eq!(planted.title, "Renamed");
+    }
+
+    /// The one-time move writes only while the column is empty, and a bad id writes nothing.
+    #[test]
+    fn adopt_registry_agent_fills_a_blank_link_and_does_not_overwrite() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("chat-1", "/tmp/a", "One")).unwrap();
+        upsert_session(&conn, &sample("chat-2", "/tmp/a", "Two")).unwrap();
+        assert!(adopt_registry_agent(&conn, "chat-1", "my-copilot").unwrap());
+        assert_eq!(
+            get_session(&conn, "chat-1")
+                .unwrap()
+                .unwrap()
+                .registry_agent_id
+                .as_deref(),
+            Some("my-copilot")
+        );
+        // A second move, and a move onto a row that already has an entry, leave the first one.
+        assert!(!adopt_registry_agent(&conn, "chat-1", "other-agent").unwrap());
+        assert_eq!(
+            get_session(&conn, "chat-1")
+                .unwrap()
+                .unwrap()
+                .registry_agent_id
+                .as_deref(),
+            Some("my-copilot")
+        );
+        assert!(!adopt_registry_agent(&conn, "missing", "my-copilot").unwrap());
+        assert!(!adopt_registry_agent(&conn, "chat-2", "claude").unwrap());
+        assert!(!adopt_registry_agent(&conn, "chat-2", "../x").unwrap());
+        assert!(get_session(&conn, "chat-2")
+            .unwrap()
+            .unwrap()
+            .registry_agent_id
+            .is_none());
     }
 
     #[test]
@@ -3195,7 +4278,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20, 21);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -3522,6 +4605,41 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_edit_without_blocks_keeps_the_stored_transcript_byte_for_byte() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("kept", "/tmp/a", "Conversation");
+        upsert_session(&conn, &row).unwrap();
+        let raw = |conn: &Connection| -> String {
+            conn.query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'kept'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let before = raw(&conn);
+
+        let full = row.blocks.clone();
+        row.blocks = json!([]);
+        row.queued_messages = vec![json!({"id":"q", "text":"Next", "attachments":[]})];
+        upsert_session_keeping(&conn, &row, true).unwrap();
+        let stored = get_session(&conn, "kept").unwrap().unwrap();
+        assert_eq!(raw(&conn), before);
+        assert_eq!(stored.blocks, full);
+        assert_eq!(stored.queued_messages, row.queued_messages);
+
+        // Nothing stored to keep: the webview is told to send the blocks.
+        let mut fresh = sample("new", "/tmp/a", "New");
+        fresh.blocks = json!([]);
+        let error = upsert_session_keeping(&conn, &fresh, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("blocks-missing"), "{error}");
+        assert!(get_session(&conn, "new").unwrap().is_none());
+    }
+
+    #[test]
     fn sidebar_visibility_round_trips_without_hiding_session_access() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
@@ -3623,6 +4741,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.id == "old" && item.private_chat));
+
+        // A chat switched back off still has a private part, so it stays on the list.
+        set_private(&conn, &row.id, false, Some("turn-3")).unwrap();
+        assert_eq!(list_private_keys(&conn).unwrap().len(), 1);
 
         // A boundary that is not a message id must not unlock the chat.
         conn.execute(
@@ -4039,6 +5161,94 @@ mod tests {
         assert_eq!(restored.branch.as_deref(), Some("main"));
     }
 
+    /// A chat that came in with no folder (docs/PORTABLE.md) keeps saving while it waits for one; the checks that
+    /// protect the row itself stay.
+    #[test]
+    fn a_chat_with_no_folder_yet_can_still_be_saved() {
+        assert_eq!(check_upsert(&sample("s1", "", "Imported")), Ok(()));
+        assert!(check_upsert(&sample("../s1", "", "Imported")).is_err());
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        let saved = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(saved.cwd, "");
+        // Never the branch of whatever checkout the app itself runs in.
+        assert_eq!(saved.branch, None);
+    }
+
+    /// Migration 21: what an import's file named for a cleared folder is kept in a real table, and goes with its chat.
+    #[test]
+    fn the_imported_folder_notes_are_a_migration_and_go_with_their_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "session_id",
+                "cwd",
+                "worktree_cwd",
+                "blocked",
+                "project_id",
+                "rest"
+            ]
+        );
+        // An older database (version 20, no table) gets it.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        conn.execute(
+            "INSERT INTO imported_chat_folders (session_id, cwd) VALUES ('s1', '/Users/old/app')",
+            [],
+        )
+        .unwrap();
+        delete_session(&conn, "s1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.
+    #[test]
+    fn chats_with_no_folder_are_listed_together() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let said = json!([{ "id": "u", "role": "user", "text": "hello" }]);
+        for (id, cwd) in [("a", ""), ("b", ""), ("c", "/tmp/a")] {
+            let mut session = sample(id, cwd, id);
+            session.blocks = said.clone();
+            upsert_session(&conn, &session).unwrap();
+        }
+        // An imported chat that never had a message of its own is listed too: it has to be findable.
+        let mut quiet = sample("d", "", "d");
+        quiet.blocks = json!([]);
+        upsert_session(&conn, &quiet).unwrap();
+        let ids: Vec<_> = list_folderless(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["a", "b", "d"] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        // A chat with a folder still lists only by project, and only once it has a message.
+        assert_eq!(list_by_project(&conn, "").unwrap().len(), 2);
+    }
+
     #[test]
     fn archive_round_trips_and_survives_upsert() {
         let store = SessionStore::open_in_memory().unwrap();
@@ -4130,7 +5340,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let init = std::process::Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir)
             .output();
@@ -4142,7 +5352,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
-        let head = std::process::Command::new("git")
+        let head = crate::git_cmd::git()
             .args(["symbolic-ref", "HEAD", "refs/heads/fix-sidebar"])
             .current_dir(&dir)
             .status();
@@ -4150,7 +5360,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
-        let origin = std::process::Command::new("git")
+        let origin = crate::git_cmd::git()
             .args([
                 "remote",
                 "add",
@@ -5010,5 +6220,968 @@ mod tests {
         .unwrap();
         assert!(result.hits.is_empty());
         assert!(!result.truncated);
+    }
+}
+
+/// WP-177: the persisted guard on a chat's blocks. Each case goes through the real upsert, so a stale copy is refused by
+/// the stored row, not by any window's memory.
+#[cfg(test)]
+mod teleport_guard_tests {
+    use super::*;
+
+    fn chat(blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-1",
+            "cwd": "/tmp/teleport-guard",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Guarded",
+            "providerSessionId": "provider-1",
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(extra: Vec<Value>) -> Value {
+        let mut blocks = base();
+        blocks.extend(extra);
+        Value::Array(blocks)
+    }
+
+    fn frozen(move_id: &str) -> Value {
+        json!({ "id": format!("teleport-frozen-{move_id}"), "role": "system", "text": "{}", "notice": "teleport-frozen" })
+    }
+
+    fn moved_away(at: f64) -> Value {
+        json!({ "id": format!("teleported@host-a@{at}"), "role": "system", "text": "Moved to Studio box", "notice": "teleported", "startedAt": at })
+    }
+
+    fn moved_back(move_id: &str, at: f64) -> Value {
+        json!({ "id": format!("teleported-back-{move_id}"), "role": "system", "text": "Moved back to this Mac", "notice": "teleported-back", "startedAt": at })
+    }
+
+    fn incoming(move_id: &str) -> Value {
+        json!({ "id": format!("teleport-incoming-{move_id}"), "role": "system", "text": "{}", "notice": "teleport-incoming" })
+    }
+
+    fn step(
+        conn: &Connection,
+        blocks: Value,
+        move_id: &str,
+        op: &str,
+    ) -> rusqlite::Result<SessionSummary> {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session)
+    }
+
+    fn save(conn: &Connection, blocks: Value) -> rusqlite::Result<SessionSummary> {
+        upsert_session(conn, &chat(blocks))
+    }
+
+    fn refused(error: rusqlite::Error) -> bool {
+        error.to_string().starts_with("teleport-refused")
+    }
+
+    fn conflict(error: rusqlite::Error) -> bool {
+        error.to_string().starts_with("teleport-conflict")
+    }
+
+    #[test]
+    fn a_move_brief_is_kept_and_a_later_save_clears_it() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = chat(Value::Array(base()));
+        session.move_brief_owed = true;
+        session.moved_from = Some("  Studio box  ".into());
+        upsert_session(&conn, &session).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(row.move_brief_owed);
+        assert_eq!(row.moved_from.as_deref(), Some("Studio box"));
+
+        session.move_brief_owed = false;
+        session.moved_from = Some("   ".into());
+        upsert_session(&conn, &session).unwrap();
+        let cleared = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(!cleared.move_brief_owed);
+        assert_eq!(cleared.moved_from, None);
+
+        session.moved_from = Some("n".repeat(250));
+        upsert_session(&conn, &session).unwrap();
+        let capped = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            capped
+                .moved_from
+                .as_deref()
+                .map(str::chars)
+                .map(Iterator::count),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_drop_a_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // A window whose copy predates the freeze writes the chat. The save lands, and the freeze stays.
+        save(&conn, Value::Array(base())).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(blocks_of(&row.blocks)
+            .iter()
+            .any(|b| b.get("notice") == Some(&json!("teleport-frozen"))));
+    }
+
+    #[test]
+    fn a_second_freeze_is_a_conflict_not_a_second_hold() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        assert!(conflict(
+            step(
+                &conn,
+                with(vec![frozen("m1"), frozen("m2")]),
+                "m2",
+                "freeze"
+            )
+            .unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn a_moved_chat_refuses_a_pre_move_copy_and_keeps_its_marker() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@1000"),
+            "an ordinary save of a pre-move copy brought the chat back"
+        );
+        // The marker itself is an ordinary save the row accepts.
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_restore_a_moved_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // The release leaves the transcript and the provider session behind, as the move step does.
+        let mut released = chat(Value::Array(vec![moved_away(1000.0)]));
+        released.provider_session_id = None;
+        released.queued_messages.clear();
+        released.teleport = Some(TeleportWrite {
+            move_id: "m1".into(),
+            op: "release".into(),
+        });
+        upsert_session(&conn, &released).unwrap();
+        let mut stale = chat(Value::Array(base()));
+        stale.queued_messages = vec![json!({ "id": "q1", "text": "queued before the move" })];
+        save(&conn, stale.blocks.clone()).unwrap();
+        upsert_session(&conn, &stale).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(row.provider_session_id, None);
+        assert!(row.queued_messages.is_empty());
+        assert!(
+            !blocks_of(&row.blocks)
+                .iter()
+                .any(|block| block.get("role") == Some(&json!("user"))),
+            "a pre-move copy put the transcript back on a moved chat"
+        );
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@1000")
+        );
+    }
+
+    #[test]
+    fn a_thaw_removes_only_its_own_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // Another move's thaw cannot clear this move's freeze.
+        assert!(refused(
+            step(&conn, Value::Array(base()), "m2", "thaw").unwrap_err()
+        ));
+        step(&conn, Value::Array(base()), "m1", "thaw").unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+    }
+
+    #[test]
+    fn a_move_back_then_a_later_move_refuses_the_old_copy() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        // The host sends the copy back: stored as incoming, then opened here.
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0)]),
+            "m2",
+            "activate",
+        )
+        .unwrap();
+        // The chat runs here, then moves away again.
+        save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0), frozen("m3")]),
+            "m3",
+            "freeze",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0), moved_away(3000.0)]),
+            "m3",
+            "release",
+        )
+        .unwrap();
+        // The copy App held before the second move still says it is back here. The save lands, and the chat stays away.
+        save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@3000"),
+            "an ordinary save of an older copy brought the chat back"
+        );
+    }
+
+    /// PR #214 review r2: the release the webview writes (teleportLocal.ts) keeps the marker alone, with no user message.
+    /// The project listing (`has_user_message = 1`) is what the sidebar and launch recovery read, so the moved chat, and a
+    /// move back's incoming copy stored on it, must still be listed.
+    #[test]
+    fn a_moved_chat_and_its_incoming_copy_stay_listed_in_their_project() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(
+            &conn,
+            Value::Array(vec![moved_away(1000.0)]),
+            "m1",
+            "release",
+        )
+        .unwrap();
+        let listed = list_by_project(&conn, "/tmp/teleport-guard").unwrap();
+        assert!(
+            listed.iter().any(|summary| summary.id == "chat-1"),
+            "a moved chat's marker row drops out of its project's list"
+        );
+        step(
+            &conn,
+            Value::Array(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        let listed = list_by_project(&conn, "/tmp/teleport-guard").unwrap();
+        assert!(
+            listed.iter().any(|summary| summary.id == "chat-1"),
+            "a move back's incoming copy is invisible to launch recovery"
+        );
+    }
+
+    #[test]
+    fn an_abort_refuses_its_move_and_drops_its_copy_only() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        let aborted = json!({ "id": "teleport-aborted-m2", "role": "system", "text": "", "notice": "teleport-aborted" });
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), aborted.clone()]),
+            "m2",
+            "abort",
+        )
+        .unwrap();
+        // Once aborted, the same move cannot open its copy.
+        assert!(conflict(
+            step(
+                &conn,
+                with(vec![moved_away(1000.0), aborted]),
+                "m2",
+                "activate"
+            )
+            .unwrap_err()
+        ));
+    }
+
+    fn ask(move_id: &str) -> Value {
+        json!({
+            "id": format!("teleport-freeze-asked-{move_id}"),
+            "role": "system",
+            "text": "{\"peer\":\"host-a\",\"at\":1}",
+            "notice": "teleport-freeze-asked"
+        })
+    }
+
+    fn owed(move_id: &str) -> Value {
+        json!({
+            "id": format!("teleport-release-owed-{move_id}"),
+            "role": "system",
+            "text": "{}",
+            "notice": "teleport-release-owed"
+        })
+    }
+
+    fn has_notice(conn: &Connection, notice: &str) -> bool {
+        let row = get_session(conn, "chat-1").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| notice_of(block) == notice)
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_drop_a_move_note() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        // The freeze ask is its own step. A quit's copy from before the ask cannot erase it.
+        step(&conn, with(vec![ask("m2")]), "m2", "freeze-ask").unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        assert!(has_notice(&conn, "teleport-freeze-asked"));
+        step(&conn, Value::Array(base()), "m2", "clear-freeze-ask").unwrap();
+        assert!(!has_notice(&conn, "teleport-freeze-asked"));
+
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
+        assert!(has_notice(&conn, "teleport-incoming"));
+
+        let aborted = json!({
+            "id": "teleport-aborted-m2",
+            "role": "system",
+            "text": "{\"peer\":\"host-a\"}",
+            "notice": "teleport-aborted"
+        });
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), aborted]),
+            "m2",
+            "abort",
+        )
+        .unwrap();
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
+        assert!(has_notice(&conn, "teleport-aborted"));
+
+        // A later move back owes a release. An ordinary save cannot drop that note either.
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m3")]),
+            "m3",
+            "incoming",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m3", 2000.0), owed("m3")]),
+            "m3",
+            "activate",
+        )
+        .unwrap();
+        save(&conn, with(vec![moved_back("m3", 2000.0)])).unwrap();
+        assert!(has_notice(&conn, "teleport-release-owed"));
+        step(&conn, with(vec![moved_back("m3", 2000.0)]), "m3", "settle").unwrap();
+        assert!(!has_notice(&conn, "teleport-release-owed"));
+    }
+}
+
+/// PR #214 review r4: H-B, red first. Each move note is written the way 9ca4b81c1 wrote it (a plain save, or a step that
+/// existed then), then a quit's ordinary save of a copy that never heard of the note lands. The store must refuse it and
+/// keep the note, or recovery has nothing left to finish or undo. Uses only steps both versions know, so it fails on
+/// 9ca4b81c1 at the refusal, not at an unknown step.
+#[cfg(test)]
+mod review214_r4_move_notes {
+    use super::*;
+
+    fn chat(blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r4",
+            "cwd": "/tmp/review214-r4",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn note(notice: &str, move_id: &str, text: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": text, "notice": notice })
+    }
+
+    fn marker() -> Value {
+        json!({ "id": "teleported@host-a@1000", "role": "system", "text": "Moved to Studio box", "notice": "teleported", "startedAt": 1000.0 })
+    }
+
+    fn back(move_id: &str) -> Value {
+        json!({ "id": format!("teleported-back-{move_id}"), "role": "system", "text": "Moved back to this Mac", "notice": "teleported-back", "startedAt": 2000.0 })
+    }
+
+    fn save(conn: &Connection, blocks: Vec<Value>) -> rusqlite::Result<SessionSummary> {
+        upsert_session(conn, &chat(Value::Array(blocks)))
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) {
+        let mut session = chat(Value::Array(blocks));
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session).unwrap();
+    }
+
+    fn moved_away(conn: &Connection) {
+        save(conn, base()).unwrap();
+        let mut frozen = base();
+        frozen.push(note("teleport-frozen", "m1", "{}"));
+        step(conn, frozen, "m1", "freeze");
+        step(conn, vec![marker()], "m1", "release");
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r4").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    fn quit_is_refused(conn: &Connection, copy: Vec<Value>, kept: &str) {
+        save(conn, copy).expect("a quit's ordinary save did not land");
+        assert!(stored_has(conn, kept), "{kept} is gone from the stored row");
+    }
+
+    /// Same steps as the old quit test: an ordinary save carries the ask, then a quit saves the marker alone.
+    /// An ordinary save cannot plant the ask, so the quit has nothing to erase.
+    #[test]
+    fn an_ordinary_save_cannot_plant_a_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        save(
+            &conn,
+            vec![
+                marker(),
+                note(
+                    "teleport-freeze-asked",
+                    "m2",
+                    "{\"peer\":\"host-a\",\"at\":1}",
+                ),
+            ],
+        )
+        .unwrap();
+        let _ = save(&conn, vec![marker()]);
+        assert!(
+            !stored_has(&conn, "teleport-freeze-asked-m2"),
+            "an ordinary save planted a freeze ask"
+        );
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![
+                marker(),
+                note(
+                    "teleport-freeze-asked",
+                    "m2",
+                    "{\"peer\":\"host-a\",\"at\":1}",
+                ),
+            ],
+            "m2",
+            "freeze-ask",
+        );
+        quit_is_refused(&conn, vec![marker()], "teleport-freeze-asked-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_an_incoming_copy() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        quit_is_refused(&conn, vec![marker()], "teleport-incoming-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_refused_move() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        step(
+            &conn,
+            vec![
+                marker(),
+                note("teleport-aborted", "m2", "{\"peer\":\"host-a\"}"),
+            ],
+            "m2",
+            "abort",
+        );
+        quit_is_refused(&conn, vec![marker()], "teleport-aborted-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_release_still_owed() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        let mut opened = base();
+        opened.push(back("m2"));
+        let mut owed = opened.clone();
+        owed.push(note(
+            "teleport-release-owed",
+            "m2",
+            "{\"peer\":\"host-a\",\"at\":1}",
+        ));
+        step(&conn, owed, "m2", "activate");
+        quit_is_refused(&conn, opened, "teleport-release-owed-m2");
+    }
+}
+
+/// A trashed chat leaves the sidebar, and its move notes have to stay visible to recovery. A chat trashed on its own
+/// and a chat trashed with its project are both still rows. A message that only mentions a notice is not one.
+#[cfg(test)]
+mod review214_r5_trashed_move {
+    use super::*;
+
+    fn chat(id: &str, blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": id,
+            "cwd": "/tmp/review214-r5",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": id,
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn freeze_note() -> Value {
+        json!({
+            "id": "teleport-frozen-m1",
+            "role": "system",
+            "text": "{}",
+            "notice": "teleport-frozen"
+        })
+    }
+
+    fn trash(conn: &Connection, id: &str, with_kind: &str, with_id: &str) {
+        conn.execute(
+            "INSERT INTO trash_items (
+               kind, item_id, title, deleted_at, trashed_with_kind, trashed_with_id, version
+             ) VALUES ('chat', ?1, ?1, 1, ?2, ?3, 1)",
+            params![id, with_kind, with_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recovery_still_reads_a_trashed_chats_move_notes() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "trashed-move",
+                json!([
+                    { "id": "u1", "role": "user", "text": "keep" },
+                    freeze_note()
+                ]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "child-move",
+                json!([
+                    { "id": "u1", "role": "user", "text": "keep" },
+                    freeze_note()
+                ]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "plain",
+                json!([{ "id": "u1", "role": "user", "text": "ordinary" }]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "mentioned",
+                json!([{
+                    "id": "u1",
+                    "role": "user",
+                    "text": "the log said \"teleport-frozen\" and nothing else"
+                }]),
+            ),
+        )
+        .unwrap();
+        trash(&conn, "trashed-move", "chat", "trashed-move");
+        trash(&conn, "child-move", "project", "proj-1");
+
+        assert!(get_session(&conn, "trashed-move").unwrap().is_none());
+        assert!(get_session(&conn, "child-move").unwrap().is_none());
+        assert!(get_session(&conn, "plain").unwrap().is_some());
+
+        let ids = chat_ids_with_move_notes(&conn).unwrap();
+        assert_eq!(
+            ids,
+            vec!["child-move".to_string(), "trashed-move".to_string()]
+        );
+
+        for id in ["trashed-move", "child-move"] {
+            let row = get_session_for_move(&conn, id)
+                .unwrap()
+                .expect("recovery cannot read a trashed chat");
+            assert!(
+                serde_json::to_string(&row.blocks)
+                    .unwrap()
+                    .contains("\"teleport-frozen\""),
+                "{id}"
+            );
+        }
+    }
+}
+
+/// PR #214 review r6: the window flushes its pending save before it reads a row a move step changed (709a9134f). That
+/// save is an ordinary one, of the copy the window last took. After a step that removed a note (a thaw, a settle), the
+/// copy still has it, and the guard refuses only a dropped note, so the save puts it back. A thawed freeze comes back and
+/// the chat is locked with no runnable copy until a later launch's recovery. The store must refuse the stale copy.
+#[cfg(test)]
+mod review214_r6_stale_notes {
+    use super::*;
+
+    fn chat(blocks: Vec<Value>) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r6",
+            "cwd": "/tmp/review214-r6",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": Value::Array(blocks),
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(note: Value) -> Vec<Value> {
+        let mut blocks = base();
+        blocks.push(note);
+        blocks
+    }
+
+    fn note(notice: &str, move_id: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": "{\"peer\":\"host-a\",\"at\":1}", "notice": notice })
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session).unwrap();
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r6").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_thawed_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        step(&conn, with(note("teleport-frozen", "m1")), "m1", "freeze");
+        // The window took the frozen row. The move fails at once and thaws.
+        let window_copy = with(note("teleport-frozen", "m1"));
+        step(&conn, base(), "m1", "thaw");
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-frozen-m1"),
+            "an ordinary save of the window's copy put the thawed freeze back"
+        );
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_settled_release() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(with(note("teleport-release-owed", "m2")))).unwrap();
+        let window_copy = with(note("teleport-release-owed", "m2"));
+        step(&conn, base(), "m2", "settle");
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-release-owed-m2"),
+            "an ordinary save of the window's copy put the settled release note back"
+        );
+    }
+}
+
+// PR #214 hard review, round 7: red repro for 4863e761e. Each case states the RIGHT outcome.
+// 1. The guard lets an ordinary save add a freeze ask, so a stale copy puts back an ask its clear step already settled.
+//    Launch recovery then runs that ask: it writes a refused-move note and asks the named host to thaw, with no person.
+// 2. A step is checked only on its own move notes. The port builds a step from a row it read earlier, so a step that
+//    lands after an ordinary save of a reply writes the row back without that reply, and the store takes it.
+#[cfg(test)]
+mod review214_r7_steps_and_asks {
+    use super::*;
+
+    fn chat(blocks: Vec<Value>) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r7",
+            "cwd": "/tmp/review214-r7",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": Value::Array(blocks),
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(extra: Vec<Value>) -> Vec<Value> {
+        let mut blocks = base();
+        blocks.extend(extra);
+        blocks
+    }
+
+    fn note(notice: &str, move_id: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": "{\"peer\":\"host-a\",\"at\":1}", "notice": notice })
+    }
+
+    fn reply() -> Value {
+        json!({ "id": "a2", "role": "assistant", "text": "the reply saved after the step read the row" })
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) -> Result<(), String> {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r7").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_cleared_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        step(
+            &conn,
+            with(vec![note("teleport-freeze-asked", "m3")]),
+            "m3",
+            "freeze-ask",
+        )
+        .unwrap();
+        // The window took the row with the ask. The move settles and its clear step removes the ask.
+        let window_copy = with(vec![note("teleport-freeze-asked", "m3")]);
+        step(&conn, base(), "m3", "clear-freeze-ask").unwrap();
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-freeze-asked-m3"),
+            "an ordinary save of the window's copy put the cleared freeze ask back"
+        );
+    }
+
+    #[test]
+    fn a_freeze_step_cannot_drop_a_saved_reply() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        // The move read the row, then the window saved a reply, then the freeze is written from the earlier read.
+        upsert_session(&conn, &chat(with(vec![reply()]))).unwrap();
+        let _ = step(
+            &conn,
+            with(vec![note("teleport-frozen", "m4")]),
+            "m4",
+            "freeze",
+        );
+        assert!(
+            stored_has(&conn, "a2"),
+            "the freeze step wrote the row back without the saved reply"
+        );
+    }
+
+    #[test]
+    fn a_settle_step_cannot_drop_a_saved_reply() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let back = json!({ "id": "teleported-back-m5", "role": "system", "text": "Moved back", "notice": "teleported-back" });
+        upsert_session(
+            &conn,
+            &chat(with(vec![
+                back.clone(),
+                note("teleport-release-owed", "m5"),
+            ])),
+        )
+        .unwrap();
+        // The chat is back here and the person is chatting. Recovery read the row, then the reply was saved.
+        upsert_session(
+            &conn,
+            &chat(with(vec![
+                back.clone(),
+                note("teleport-release-owed", "m5"),
+                reply(),
+            ])),
+        )
+        .unwrap();
+        let _ = step(&conn, with(vec![back]), "m5", "settle");
+        assert!(
+            stored_has(&conn, "a2"),
+            "the settle step wrote the row back without the saved reply"
+        );
+    }
+
+    /// An ordinary save may not rewrite a stored move note. Recovery trusts the peer, the time and the owner on it.
+    #[test]
+    fn an_ordinary_save_cannot_rewrite_a_move_note() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        let ask = json!({
+            "id": "teleport-freeze-asked-m9",
+            "role": "system",
+            "text": "{\"peer\":\"host-a\",\"at\":1,\"owner\":\"window-a\"}",
+            "notice": "teleport-freeze-asked",
+            "owner": "window-a"
+        });
+        step(&conn, with(vec![ask]), "m9", "freeze-ask").unwrap();
+        let mut blocks = base();
+        blocks.push(json!({
+            "id": "teleport-freeze-asked-m9",
+            "role": "system",
+            "text": "{\"peer\":\"host-b\",\"at\":9,\"owner\":\"window-b\"}",
+            "notice": "teleport-freeze-asked",
+            "owner": "window-b"
+        }));
+        blocks.push(reply());
+        upsert_session(&conn, &chat(blocks)).unwrap();
+        let row = get_session(&conn, "chat-r7").unwrap().unwrap();
+        let note = blocks_of(&row.blocks)
+            .iter()
+            .find(|block| id_of(block) == "teleport-freeze-asked-m9")
+            .expect("the freeze ask is gone");
+        assert_eq!(
+            note.get("text").and_then(Value::as_str),
+            Some("{\"peer\":\"host-a\",\"at\":1,\"owner\":\"window-a\"}")
+        );
+        assert_eq!(note.get("owner").and_then(Value::as_str), Some("window-a"));
+        assert!(
+            stored_has(&conn, "a2"),
+            "the ordinary save that tried to rewrite the note dropped the reply"
+        );
     }
 }

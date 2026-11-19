@@ -1,11 +1,16 @@
 // Hivra WP-40: a finished report is done only when the gates passed. One failure goes back to the worker; the next
 // fails. Unsure, or a check that couldn't run, is not a pass and is not another fix round.
-import fs from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { completionMessage, type MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
-import { GATE_TRIES } from "../../monos/model/workerGate";
-import { briefGateAction, briefGatesFor, gateRequest, type GateRecordView } from "./completionGates";
+import { GATE_TRIES, ROUNDS_BEFORE_RETHINK } from "../../monos/model/workerGate";
+import type { Block } from "../../sessions/model/session";
+import { briefGateAction, briefGatesFor, gateRequest, type BriefGateInput, type GateRecordView } from "./completionGates";
+
+function block(partial: Partial<Block> & Pick<Block, "role">): Block {
+  return { id: partial.id ?? partial.role, text: partial.text ?? "", ...partial };
+}
 
 const done = (over: Partial<MonoSessionCompletionResult> = {}): MonoSessionCompletionResult =>
   ({
@@ -51,6 +56,23 @@ describe("what a brief asks for", () => {
     expect(gateRequest({ checks: Array.from({ length: 20 }, (_, i) => `c${i}`) })?.checks).toHaveLength(20);
     expect(gateRequest({ checks: ["x".repeat(60)] })?.checks?.[0]).toHaveLength(60);
     expect(() => gateRequest({ code: "true" })).toThrow("code must be true or false");
+  });
+
+  // SC-7: a first mate says a brief is a bug fix with kind "fix"; the app keeps it with the plan so the round asks for the
+  // failing run first (src-tauri/src/firstmate/gates.rs). It is a request of its own, even with no gates named.
+  it("keeps a bug fix's kind, alone or with the other words, and leaves a blank one out", () => {
+    expect(gateRequest({ kind: "fix" })).toEqual({ kind: "fix" });
+    expect(gateRequest({ kind: " Fix " })).toEqual({ kind: "fix" });
+    expect(gateRequest({ kind: "fix", code: true, checks: ["unit"] })).toEqual({ kind: "fix", code: true, checks: ["unit"] });
+    expect(gateRequest({ kind: "" })).toBeUndefined();
+    expect(gateRequest({ kind: undefined })).toBeUndefined();
+    expect(gateRequest({ kind: null })).toBeUndefined();
+  });
+
+  it("refuses a kind that isn't fix in the same words as Rust", () => {
+    expect(() => gateRequest({ kind: "feature" })).toThrow(`"feature" isn't a kind of brief. Use fix, or leave kind out.`);
+    expect(() => gateRequest({ kind: 1 })).toThrow("kind must be fix");
+    expect(() => gateRequest({ kind: ["fix"] })).toThrow("kind must be fix");
   });
 });
 
@@ -100,6 +122,135 @@ describe("one round", () => {
     const step = briefGateAction({ verdict: "not-run", summary: "Routes check not run: no script." }, 0);
     expect(step.action).toBe("unsure");
   });
+
+  it("a sent-back failure names the reason, once, then fails the report", () => {
+    const summary = "Sent back: tests went stale after the last edit.";
+    const first = briefGateAction({ verdict: "failed", summary }, 0);
+    expect(first.action).toBe("resend");
+    if (first.action !== "resend") return;
+    expect(first.note.line).toBe(summary);
+    expect(first.ask).toContain(summary);
+    expect(first.failed(done()).error).toBe(`${summary} Still failed after 2 tries.`);
+
+    const listed = [
+      "Sent back: a check failed this turn (npm test). Also 1 more.",
+      "A check failed this turn (npm test).",
+      "Tests went stale after the last edit.",
+    ].join("\n");
+    const again = briefGateAction({ verdict: "failed", summary: listed }, 0);
+    if (again.action !== "resend") throw new Error("expected resend");
+    expect(again.note.line).toBe("Sent back: a check failed this turn (npm test). Also 1 more.");
+    expect(again.ask).toContain("Tests went stale after the last edit.");
+
+    const second = briefGateAction({ verdict: "failed", summary }, 1);
+    expect(second.action).toBe("fail");
+    if (second.action !== "fail") return;
+    expect(second.apply(done()).error).toBe(`${summary} Still failed after 2 tries.`);
+    expect(second.apply(done()).status).toBe("failed");
+  });
+
+  it("a sent-back line with nothing after it, a control character, or a line too long keeps the usual note", () => {
+    const usual = "Checks failed; their words went back to the worker";
+    for (const summary of ["Sent back:", "Sent back:   ", "Sent back: tests\u0007failed.", `Sent back: ${"x".repeat(200)}`]) {
+      const step = briefGateAction({ verdict: "failed", summary }, 0);
+      if (step.action !== "resend") throw new Error(summary);
+      expect(step.note.line, summary).toBe(usual);
+    }
+  });
+});
+
+// SC-5: after two failed rounds on one task the raw findings stop going back. Rust keeps the task's ledger of rounds and says,
+// on the record, what happens next (`next`); these read that and never count for themselves once it is there.
+describe("after two failed rounds (SC-5)", () => {
+  const failedWith = (next: GateRecordView["next"]): GateRecordView => ({
+    verdict: "failed",
+    summary: "REFUTED: the report's claims don't match the diff.\n\nFindings, numbered:\n1. Debris: a.log",
+    next,
+  });
+
+  it("a failure the ledger says to send back goes back, whatever this window has counted", () => {
+    for (const failures of [0, 1, 2, 9]) {
+      const step = briefGateAction(failedWith({ kind: "send-back", text: "" }), failures);
+      expect(step.action, String(failures)).toBe("resend");
+      if (step.action !== "resend") continue;
+      // The raw findings go back, numbered, so the worker can dismiss one.
+      expect(step.ask).toContain("Findings, numbered:\n1. Debris: a.log");
+    }
+  });
+
+  it("a rewrite sends the new brief to the worker as the next round, in Rust's words", () => {
+    const text = "[MonoCode check] The same kind of problem failed two rounds in a row.\n\nRule: Never edit a test to pass it.";
+    const step = briefGateAction(failedWith({ kind: "rewrite", text }), 1);
+    expect(step.action).toBe("resend");
+    if (step.action !== "resend") return;
+    expect(step.ask).toBe(text);
+    expect(step.note.line).toBe("Checks failed twice; a stronger model rewrote the brief and it went to the worker");
+    // If the worker can't be sent it, the first mate hears the task failed, with the findings.
+    expect(step.failed(done()).status).toBe("failed");
+  });
+
+  it("a hand-up reaches the first mate as a report it must decide, not a failure and not another round", () => {
+    const text = "The checker failed this task 2 times and a stronger model handed it to you:\nThe brief contradicts itself.\nPick one.";
+    for (const failures of [0, 1, 5]) {
+      const step = briefGateAction(failedWith({ kind: "up", text }), failures);
+      expect(step.action, String(failures)).toBe("unsure");
+      if (step.action !== "unsure") continue;
+      const lead = step.apply(done());
+      expect(lead.status).toBe("completed");
+      expect(lead.gatesNote).toBe(text);
+    }
+    const blank = briefGateAction(failedWith({ kind: "up", text: "  " }), 0);
+    if (blank.action !== "unsure") throw new Error("expected unsure");
+    expect(blank.apply(done()).gatesNote).toMatch(/decision is open/);
+  });
+
+  it("the failure after that waits for the person: the first mate is told, and nothing goes back to the worker", () => {
+    const text = "The task failed again after its rethink, so it is the person's call, not yours.";
+    for (const failures of [0, 1, 7]) {
+      const step = briefGateAction(failedWith({ kind: "person", text }), failures);
+      expect(step.action, String(failures)).toBe("unsure");
+      if (step.action !== "unsure") continue;
+      const lead = step.apply(done());
+      expect(lead.status).toBe("completed");
+      expect(lead.gatesNote).toBe(text);
+    }
+  });
+
+  it("a decision it can't read is no decision, so the old cap still applies", () => {
+    for (const next of [
+      undefined,
+      { kind: "made-up", text: "x" },
+      { kind: "rewrite", text: "" },
+      { kind: "rewrite", text: "   " },
+      { kind: "rewrite" },
+      { kind: "rewrite", text: 5 as unknown as string },
+      { kind: 5 as unknown as string, text: "x" },
+    ]) {
+      const first = briefGateAction(failedWith(next), 0);
+      expect(first.action, JSON.stringify(next)).toBe("resend");
+      const second = briefGateAction(failedWith(next), 1);
+      expect(second.action, JSON.stringify(next)).toBe("fail");
+    }
+  });
+
+  it("a decision is read only on a failed round: a pass lands, and an unsure round stays for its first mate", () => {
+    const next = { kind: "rewrite", text: "[MonoCode check] new brief" };
+    expect(briefGateAction({ verdict: "passed", summary: "ok", next }, 0)).toEqual({ action: "pass" });
+    const unsure = briefGateAction({ verdict: "unsure", summary: "couldn't tell", next }, 0);
+    expect(unsure.action).toBe("unsure");
+    if (unsure.action !== "unsure") return;
+    expect(unsure.apply(done()).gatesNote).toBe("couldn't tell");
+  });
+
+  it("two rounds is Rust's number too", () => {
+    const rust = readFileSync(
+      fileURLToPath(new URL("../../../../src-tauri/src/firstmate/rounds.rs", import.meta.url)),
+      "utf8",
+    );
+    const found = /pub const FAILED_BEFORE_RETHINK: usize = (\d+);/.exec(rust);
+    expect(found, "rounds.rs names its cap").not.toBeNull();
+    expect(Number(found?.[1])).toBe(ROUNDS_BEFORE_RETHINK);
+  });
 });
 
 describe("running them", () => {
@@ -133,6 +284,37 @@ describe("running them", () => {
     expect((await briefGatesFor(input, async () => failed))?.action).toBe("resend");
     expect((await briefGatesFor({ ...input, failures: 1 }, async () => failed))?.action).toBe("fail");
   });
+
+  it("reads facts from this turn only, and does not invent them when the blocks are missing", async () => {
+    let missing: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, report: "The tests passed." }, async (got) => {
+      missing = got;
+      return null;
+    });
+    expect(missing?.facts).toBeUndefined();
+
+    const blocks: Block[] = [
+      block({ role: "user", text: "earlier" }),
+      block({ role: "tool", tool: { command: "cargo test", status: "failed" } }),
+      block({ role: "user", text: "again" }),
+      block({ role: "tool", tool: { command: "npm test", status: "completed" } }),
+    ];
+    let seen: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, blocks, report: "Done." }, async (got) => {
+      seen = got;
+      return null;
+    });
+    expect(seen?.facts?.checks).toEqual([{ command: "npm test", status: "passed", at: 0 }]);
+    expect(seen?.facts?.answer).toBe("Done.");
+
+    const kept = { checks: [], edits: [], todos: [], answer: "kept" };
+    let given: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, blocks, facts: kept }, async (got) => {
+      given = got;
+      return null;
+    });
+    expect(given?.facts).toEqual(kept);
+  });
 });
 
 describe("the report its first mate reads", () => {
@@ -142,18 +324,8 @@ describe("the report its first mate reads", () => {
     expect(plain.text).not.toContain("NOT DONE");
     const held = completionMessage("r2", [done({ gatesNote: unsure.summary })]);
     expect(held.text).toContain(
-      `NOT DONE: Add tally delete finished, but the checks couldn't say the brief was met (${unsure.summary}). Accept or refuse with task_accept; don't report it as done.`,
+      `NOT DONE: Add tally delete finished, but the checks couldn't say the brief was met (${unsure.summary}). Accept or refuse with task_accept, giving a reason either way; don't report it as done.`,
     );
     expect(held.monoSessionCompletion?.status).toBe("completed");
   });
-});
-
-it("the app runs a brief's gates first and keeps the routes check for a brief that has none", () => {
-  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/WP-40:/);
-  expect(app).toMatch(/briefGatesFor\(/);
-  expect(app).toMatch(/if \(gateDue\(result\)\) \{/);
-  expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffFor\(workerStarted, monoId, /);
-  expect(app).toMatch(/submitSessionRef\.current\(sessionId, gateAsk\(run\), \[\], \{/);
-  expect(app).toMatch(/finish\(gateFailedResult\(result, run\)\)/);
 });

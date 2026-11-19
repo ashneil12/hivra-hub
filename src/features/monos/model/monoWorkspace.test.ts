@@ -271,6 +271,59 @@ it("does not delete a conversation when stopping it fails", async () => {
   expect(sessionOf(monoId)).toBe(current.id);
 });
 
+// SC-19 (never lose an ask, gap D1): the work a reset chat still owned goes to the fresh chat.
+it("hands the reset chat's work to the fresh chat once the swap is done, and only then", async () => {
+  const current = chat("resident");
+  const monoId = monoFor(current.cwd, current.id);
+  const stopped = { ...current, busy: false, title: "Planning" };
+  const order: string[] = [];
+  const replace = vi.fn(() => order.push("replace"));
+  const moveWork = vi.fn(async (old: typeof current, fresh: typeof current) => {
+    order.push("move");
+    // By now the Mono's chat is the fresh one, and the swap is in place.
+    expect(sessionOf(monoId)).toBe(fresh.id);
+    expect(old.id).toBe(current.id);
+  });
+  const fresh = await resetMonoSession(current, {
+    stop: async () => stopped,
+    remove: async () => undefined,
+    replace,
+    moveWork,
+  });
+  expect(moveWork).toHaveBeenCalledExactlyOnceWith(stopped, fresh);
+  expect(order).toEqual(["replace", "move"]);
+});
+
+it("moves no work when the reset fails before the new chat is in place", async () => {
+  const current = chat("resident");
+  monoFor(current.cwd, current.id);
+  const moveWork = vi.fn(async () => undefined);
+  await expect(
+    resetMonoSession(current, {
+      stop: async () => current,
+      remove: vi.fn().mockRejectedValue(new Error("Storage unavailable")),
+      replace: vi.fn(),
+      moveWork,
+    }),
+  ).rejects.toThrow("Storage unavailable");
+  expect(moveWork).not.toHaveBeenCalled();
+});
+
+it("never undoes a reset because the work could not be moved: the failure is logged", async () => {
+  const current = chat("resident");
+  const monoId = monoFor(current.cwd, current.id);
+  const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const fresh = await resetMonoSession(current, {
+    stop: async () => current,
+    remove: async () => undefined,
+    replace: vi.fn(),
+    moveWork: vi.fn().mockRejectedValue(new Error("database is locked")),
+  });
+  expect(sessionOf(monoId)).toBe(fresh.id);
+  expect(logged).toHaveBeenCalledOnce();
+  logged.mockRestore();
+});
+
 it("leaves ordinary tabs, their selection, and their sessions untouched", () => {
   const session = chat("blank");
   const tab = newTab(session.id);

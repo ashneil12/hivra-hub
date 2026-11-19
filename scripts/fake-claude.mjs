@@ -174,17 +174,27 @@ export function noConversationFrame(id) {
   };
 }
 
+/**
+ * The cost a finished turn reports. Missing, or anything that is not a finite
+ * amount of zero or more, is a reported 0. It is not an unpriced turn.
+ */
+export function fixtureCost(scenario) {
+  const value = scenario?.fixtureCost;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
+  return value;
+}
+
 /** A scenario file: rules (JSON) or a recorded transcript (NDJSON). */
 export function loadScenario(file) {
-  if (!file) return { kind: "rules", rules: [] };
+  if (!file) return { kind: "rules", rules: [], fixtureCost: undefined };
   const text = fs.readFileSync(file, "utf8");
   const first = text.trimStart();
   if (first.startsWith("{") && /"type"\s*:\s*"transcript_start"/.test(first.split("\n")[0])) {
-    return { kind: "transcript", turns: transcriptTurns(parseTranscript(text)) };
+    return { kind: "transcript", turns: transcriptTurns(parseTranscript(text)), fixtureCost: undefined };
   }
   const parsed = JSON.parse(text);
   if (parsed?.version !== 1 || !Array.isArray(parsed.rules)) throw new Error(`${file}: not a fake-claude rules file`);
-  return { kind: "rules", rules: parsed.rules };
+  return { kind: "rules", rules: parsed.rules, fixtureCost: parsed.fixtureCost };
 }
 
 /** The rule that answers a prompt in a conversation, or null. `fired` counts each rule's plays so far. */
@@ -692,7 +702,7 @@ export async function main(argv = process.argv.slice(2)) {
       stop_reason: "end_turn",
       terminal_reason: interrupted ? "aborted" : "completed",
       session_id: conversationId,
-      total_cost_usd: 0,
+      total_cost_usd: fixtureCost(scenario),
       usage: { input_tokens: 1, output_tokens: 1 },
       uuid: randomUUID(),
     });

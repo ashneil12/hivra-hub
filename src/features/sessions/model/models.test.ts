@@ -420,6 +420,22 @@ describe("live catalog overlays", () => {
     });
   });
 
+  it("lists the built-in Claude Fable models newest first, 5.2 then 5.1 then 5", () => {
+    resetHarnessModelOverlays();
+    const fable = MODELS.filter(
+      (model) => model.harness === "claude" && model.id.startsWith("claude:fable"),
+    );
+    expect(fable.map((model) => [model.id, model.nativeId, model.name])).toEqual([
+      ["claude:fable-5-2", "claude-fable-5-2", "Claude Fable 5.2"],
+      ["claude:fable-5-1", "claude-fable-5-1", "Claude Fable 5.1"],
+      ["claude:fable-5", "claude-fable-5", "Claude Fable 5"],
+    ]);
+    expect(resolveModel("claude", "claude:fable-5-1")).toMatchObject({
+      id: "claude:fable-5-1",
+      nativeId: "claude-fable-5-1",
+    });
+  });
+
   it("is empty until a CLI catalog replaces the fallback list", () => {
     expect(hasLiveCatalog("pi")).toBe(false);
     setHarnessModels("pi", [
