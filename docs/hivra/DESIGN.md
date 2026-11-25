@@ -129,8 +129,17 @@ project.
     of its own (`hivra://local/need/<key>`, `asks/model/needLinks.ts`) and the chat draws it as that item's own card
     (the same `NeedDetail` the Inbox opens: every answer lettered, the pick marked, a box for his words, Open chat
     beside). The app's Needs you roll-up shows its items the same way, numbered, under a quiet "Needs you now". Once an
-    item stops waiting the card folds to one line ("Answered: … EXO lead has it." or "No longer needs you: …"). The
-    chat store keeps these cards, the catch-up card and the "You messaged" line through a relaunch
+    item stops waiting the card folds to one line that says, in plain words, which of three things happened: he
+    answered it ("Answered: … EXO lead has it."), he let it go ("You let it go."), or the work behind it ended ("The
+    work behind it ended before you answered.", `needs/model/settledNeeds.ts`). A question stays in Needs you until one
+    of those three: an async result that stops the chat waiting leaves it on the list saying so, and a job finishing
+    never closes a question he never answered (`asks/model/askJobs.ts`). A row he cannot tick done is finished from the
+    row itself, with Let it go on the row and on its card, and rows that are finished leave the flow for one place: a
+    folded **Finished** line with a count at the bottom of the Needs you list and of the roll-up, opening in place
+    (`needs/ui/FinishedNeeds.tsx`). Only a real ask is a question: an ask heard from his message is a question ask only
+    when the words ask a question, never when they are a statement ("Nothing else is open with me except the weekly
+    sweep, which is still your pick"), so a statement can never draw a question row (`asks/model/asks.ts` isQuestion,
+    parseHeard). The chat store keeps these cards, the catch-up card and the "You messaged" line through a relaunch
     (`asks/model/keptCards.ts`).
     The one chat has a **project filter** at its top (`asks/ui/ChiefLens.tsx`, the UI SDK's segmented control):
     Everything, then the busy projects with their red Needs you count, quiet ones behind "+N quiet". Picking one hides
@@ -152,7 +161,7 @@ project.
 | Screen | File |
 |---|---|
 | Home (cards, Chief of Staff box) | `src/features/home/ui/HomeScreen.tsx` (drawing), `HomeView.tsx` (wiring) |
-| Needs you (the one list) | `src/features/needs/model/needsLive.ts`, `needsYou.ts`; in the Inbox: `src/features/needs/ui/InboxNeeds.tsx` (rows), `NeedDetail.tsx` (a row's card) |
+| Needs you (the one list) | `src/features/needs/model/needsLive.ts`, `needsYou.ts`, `settledNeeds.ts` (what finished, and why); in the Inbox: `src/features/needs/ui/InboxNeeds.tsx` (rows), `NeedDetail.tsx` (a row's card), `FinishedNeeds.tsx` (the folded Finished line) |
 | Sidebar | `src/app/shell/ProjectRail.tsx`, `Sidebar.tsx` (chat list), `MonoRailSection.tsx`, `src/features/hub/ui/HubTopNav.tsx`, `HubProjectItems.tsx` |
 | What is selected | `src/features/hub/model/hubNav.ts` (`HubSelection`), `homeScope.ts` |
 | A first mate and its chats | `src/features/monos/model/mono.ts`, `monoWorkspace.ts` |

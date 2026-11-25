@@ -69,6 +69,12 @@ function failureNote(row: JobRow): string {
   return clip(`${lead}${title ? ` ("${clip(title, 50)}")` : ""}: ${reason}. Back on the list.`, NOTE_MAX);
 }
 
+/** Why a question is still on his list after the job that carried it finished. */
+function questionNote(row: JobRow): string {
+  const title = oneLine(row.title ?? "");
+  return clip(`Its job${title ? ` ("${clip(title, 50)}")` : ""} finished without answering it. Still yours to answer.`, NOTE_MAX);
+}
+
 function working(row: JobRow): string {
   const title = oneLine(row.title ?? "");
   return clip(title ? `Handed to a worker: ${title}` : "Handed to a worker", NOTE_MAX);
@@ -103,6 +109,12 @@ function settleAsk(doc: AskDoc, ask: Ask, rows: readonly JobRow[], now: number):
   if (phaseOf(last.row) === "passed") {
     // An ask waiting on Ash stays waiting: the job's pass does not answer what it waits on.
     if (ask.status === "waiting") return doc;
+    // A question of his is not the build's to answer either: the job finishing leaves it waiting on him, and the ask
+    // carries why, so the row says the work ended and nothing has answered it (Ash, 13 Nov).
+    if (ask.kind === "answer") {
+      const quiet = withChange(doc, ask.id, { status: "waiting", note: questionNote(last.row) }, "app", now);
+      return withJobIds("problem" in quiet ? doc : quiet.doc, ask.id, [last.row.id]);
+    }
     const out = withChange(doc, ask.id, { status: "done", proof: jobProof(last.row), note: "" }, "app", now);
     return withJobIds("problem" in out ? doc : out.doc, ask.id, [last.row.id]);
   }

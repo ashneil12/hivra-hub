@@ -30,3 +30,28 @@ test("a waiting update shows Restart now above an open project", async ({ page }
   await expect(page.getByText("No projects yet")).toHaveCount(0);
   await expect(page.locator("[data-coding-team-lead]")).toBeVisible({ timeout: 15_000 });
 });
+
+// Ash, 13 Nov: a build that merely arrived is not news the main pane must carry; breakage shows on the dev copy first.
+test("a committed update draws no bar on the main pane", async ({ page }) => {
+  await page.addInitScript((summary) => {
+    localStorage.setItem("monocode:dev-ship", JSON.stringify(summary));
+  }, {
+    enabled: true,
+    holding: false,
+    pending: null,
+    current: {
+      id: ID,
+      phase: "committed",
+      accepted: true,
+      acceptance: { state: "pending" },
+      committed: true,
+      seen: false,
+      log: "/Users/example/Library/Application Support/com.ash.monocode-hub/ship/x/runner.log",
+      from: { sha: "a".repeat(40), branch: "main" },
+      to: { sha: "b".repeat(40), branch: "main" },
+    },
+  });
+  await openLocalHub(page);
+  await expect(page.locator("[data-coding-team-lead]")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-hub-ship]")).toHaveCount(0);
+});

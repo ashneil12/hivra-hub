@@ -10,6 +10,8 @@ import { foldFirstMate } from "../model/inboxFold";
 import { askedAgo, NEED_KIND_LABEL, openNeed, shownNeed } from "../model/needContext";
 import { projectIdOf, useNeedsYou } from "../model/needsLive";
 import type { NeedsItem } from "../model/needsYou";
+import { dismissNeed, letGoDecisionKeys, type DropRow } from "../model/settledNeeds";
+import { FinishedNeeds } from "./FinishedNeeds";
 import { OneTapNotice } from "./OneTapNotice";
 import { Reveal } from "./Reveal";
 
@@ -70,7 +72,7 @@ export function InboxNeeds({
   const ordered = useMemo(() => inboxNeedsOrder(needs), [needs]);
   const projects = hubData().listProjects();
   const refs = projects.map((project) => ({ id: project.id, name: project.name, folder: project.folder ?? null }));
-  const rows = foldFirstMate(ordered, firstMate?.decisions ?? [], (path) => projectIdOf(path, refs));
+  const rows = foldFirstMate(ordered, firstMate?.decisions ?? [], (path) => projectIdOf(path, refs), letGoDecisionKeys());
   const selected = firstMate?.selectedKey ?? null;
   const open = pick ? shownNeed(ordered, pick.picked, pick.firstWhenNone ?? false)?.key : undefined;
   const openRow = (item: NeedsItem) => (pick ? pick.onPick(item) : openNeed(item));
@@ -97,6 +99,7 @@ export function InboxNeeds({
             Nothing is asking for an answer.
           </p>
         ) : null}
+        <FinishedNeeds className="px-1.5" />
       </>
     );
   }
@@ -119,6 +122,19 @@ export function InboxNeeds({
             const meta = [project, item?.who].filter(Boolean).join(" · ");
             // With a card open beside the list, the lit row is that card's; else the decision Home led here for.
             const chosen = open ? item?.key === open : decision.key != null && decision.key === selected;
+            // A first mate's decision row has no done tick, so the row carries his own drop (Ash, 13 Nov: "there's a
+            // lot of ones that I can't actually tick as done ... when they resolve, they can just go into their own
+            // pile"). The decision's key is carried so it stops drawing a row (`letGoDecisionKeys`).
+            const dropRow: DropRow = {
+              // The Needs you row's own key when it drew this decision: finished rows hide that row everywhere, not
+              // only in this folded list. A decision with no Needs row yet falls back to its own key.
+              key: item?.key ?? decision.key ?? decision.id,
+              kind: "question",
+              sentence,
+              who: decision.sourceLine ?? "The lead",
+              projectId: decision.project,
+              ...(decision.key ? { decisionKey: decision.key } : {}),
+            };
             return (
               <li
                 key={key}
@@ -145,6 +161,15 @@ export function InboxNeeds({
                   onOpenChat={firstMate.openChat}
                   onOpenWorker={firstMate.openWorker}
                 />
+                <button
+                  type="button"
+                  data-let-go-need
+                  aria-label={`Let it go: ${sentence}`}
+                  onClick={() => dismissNeed(dropRow)}
+                  className="mt-1.5 self-start rounded-md px-2 py-0.5 text-[12px] leading-4 text-content/60 hover:bg-content/8 hover:text-content focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40"
+                >
+                  Let it go
+                </button>
               </li>
             );
           }
@@ -154,6 +179,8 @@ export function InboxNeeds({
           const inline = chosen && pick?.renderOpen ? pick.renderOpen(item) : null;
           const summary = needSummary(item);
           const ago = shownAgo(item.at, now);
+          // A question he cannot tick done is finished from its own row (Ash, 13 Nov): "Let it go" is his own drop.
+          const finishable = item.kind === "question";
           return (
             <li
               key={key}
@@ -183,7 +210,7 @@ export function InboxNeeds({
                     </span>
                     {ago ? (
                       <span
-                        className={`ml-auto shrink-0 tabular-nums text-content/50 ${onQuote ? "group-focus-within/need:opacity-0 group-hover/need:opacity-0" : ""}`}
+                        className={`ml-auto shrink-0 tabular-nums text-content/50 ${onQuote || finishable ? "group-focus-within/need:opacity-0 group-hover/need:opacity-0" : ""}`}
                       >
                         {ago}
                       </span>
@@ -206,17 +233,32 @@ export function InboxNeeds({
                     />
                   </span>
                 </button>
-                {onQuote ? (
-                  <button
-                    type="button"
-                    data-quote-need={item.key}
-                    aria-label={`Quote in the chat: ${item.sentence}`}
-                    onClick={() => onQuote(item, project)}
-                    // Over the row's time, top right, only on hover or focus: the row keeps its full width.
-                    className="absolute right-1.5 top-1 rounded-md px-1.5 py-0.5 text-[12px] leading-4 text-content/70 opacity-0 hover:bg-content/8 hover:text-content focus-visible:opacity-100 group-hover/need:opacity-100"
-                  >
-                    Quote
-                  </button>
+                {onQuote || finishable ? (
+                  // Over the row's time, top right, only on hover or focus: the row keeps its full width.
+                  <div className="absolute right-1.5 top-1 flex items-center gap-1 opacity-0 focus-within:opacity-100 group-hover/need:opacity-100">
+                    {finishable ? (
+                      <button
+                        type="button"
+                        data-let-go-need={item.key}
+                        aria-label={`Let it go: ${item.sentence}`}
+                        onClick={() => dismissNeed(item)}
+                        className="rounded-md px-1.5 py-0.5 text-[12px] leading-4 text-content/70 hover:bg-content/8 hover:text-content focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40"
+                      >
+                        Let it go
+                      </button>
+                    ) : null}
+                    {onQuote ? (
+                      <button
+                        type="button"
+                        data-quote-need={item.key}
+                        aria-label={`Quote in the chat: ${item.sentence}`}
+                        onClick={() => onQuote(item, project)}
+                        className="rounded-md px-1.5 py-0.5 text-[12px] leading-4 text-content/70 hover:bg-content/8 hover:text-content focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40"
+                      >
+                        Quote
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
               {inline ? <Reveal>{inline}</Reveal> : null}
@@ -224,6 +266,7 @@ export function InboxNeeds({
           );
         })}
       </ul>
+      <FinishedNeeds className="px-1.5" />
     </section>
   );
 }

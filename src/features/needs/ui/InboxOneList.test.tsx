@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { queueHomeDecision, resetHomePending } from "../../home/model/pending";
 import { resetNeedsLiveForTest } from "../model/needsLive";
+import { resetNeedsYouForTest } from "../model/needsYou";
+import { resetSettledNeedsForTest, settledRows } from "../model/settledNeeds";
 import { InboxOneList } from "./InboxOneList";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -82,6 +84,8 @@ describe("the Inbox folds a first mate's decisions into the one Needs you list",
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     localStorage.clear();
     resetNeedsLiveForTest();
+    resetNeedsYouForTest();
+    resetSettledNeedsForTest();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -93,6 +97,8 @@ describe("the Inbox folds a first mate's decisions into the one Needs you list",
     container.remove();
     resetHomePending();
     resetNeedsLiveForTest();
+    resetNeedsYouForTest();
+    resetSettledNeedsForTest();
     localStorage.clear();
     vi.unstubAllGlobals();
   });
@@ -168,6 +174,26 @@ describe("the Inbox folds a first mate's decisions into the one Needs you list",
     });
     await vi.waitFor(() => expect(seen).toHaveLength(2));
     expect(seen).toEqual([3, 4]);
+  });
+
+  it("a decision row he cannot tick done is finished from the row itself, and does not come back", async () => {
+    // Ash, 13 Nov: "there's a lot of ones that I can't actually tick as done". A first mate's decision row has no
+    // done tick, so the row itself carries his own drop, and the decision no longer draws a row once he has let it go.
+    serve(() => [decision(1)], () => ({}));
+    await shown(() => expect(rowButton(container, "Rename")).toBeTruthy());
+    const letGo = container.querySelector("[data-let-go-need]") as HTMLButtonElement | null;
+    expect(letGo).toBeTruthy();
+    await act(async () => {
+      letGo?.click();
+    });
+    await vi.waitFor(() => expect(container.textContent ?? "").not.toContain(QUESTION));
+    expect(settledRows()[0]).toMatchObject({ key: `question:${PROJECT}:name`, decisionKey: "name", reason: "letgo" });
+    // One more read of the decisions, as the panel makes on its own, does not put it back.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent ?? "").not.toContain(QUESTION);
+    expect(container.querySelector("[data-finished-toggle]")).toBeTruthy();
   });
 
   it("the decision Home opened is the selected row, not a second card", async () => {

@@ -27,6 +27,7 @@ import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import {
   answerInWords,
   answerRow,
+  knownChatIds,
   openRows,
   openWaitingChat,
   sendToChat,
@@ -54,6 +55,8 @@ import {
   type StoppedFact,
 } from "./needsYou";
 import { noteOneTapRefusal, resetOneTapRefusal } from "./oneTapNotice";
+import { lastAnswered, noteAnswered } from "./answeredNeeds";
+import { useSettledNeeds } from "./settledNeeds";
 
 const REVIEW = "In review";
 const MERGE_PHRASE = /\bready to merge\b/i;
@@ -206,6 +209,14 @@ function noteTake(result: Promise<TakeResult>): void {
   settleTap(result, takeReason);
 }
 
+/** An answer the row took: what the line it leaves behind says (answeredNeeds.ts). Only when it went. */
+function noteTaken(result: Promise<unknown>, note: () => void): void {
+  void result.then(
+    (out) => { if (!takeReason(out)) note(); },
+    () => undefined,
+  );
+}
+
 /** Open a waiting chat on the message that asked (transcriptJump.ts finds it by its words, else by its time). */
 function openAsked(sessionId: string, text: string, at: number): void {
   requestTranscriptAsk(sessionId, { text, at });
@@ -248,7 +259,12 @@ function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | App
     ...card,
     answerLabel: tap.label,
     answerTitle: tap.title,
-    onAnswer: () => { noteTake(answerRow(chat.sessionId, row, tap.answer, "pick", seen)); },
+    onAnswer: () => {
+      const sent = answerRow(chat.sessionId, row, tap.answer, "pick", seen);
+      noteTake(sent);
+      // The answer it just gave is what takes the row off the list (settledNeeds.ts): the line left behind says so.
+      noteTaken(sent, () => noteAnswered({ key: `question:${id}`, words: tap.answer, who: base.who, sentence: row.question }));
+    },
   };
 }
 
@@ -293,7 +309,9 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     answerLabel: tap.label,
     answerTitle: tap.title,
     onAnswer: () => {
-      noteTake(takePick(chat.sessionId, { by: "ash", seen: { requestId: chat.requestId, question: chat.question, pick: chat.pick ?? null } }));
+      const sent = takePick(chat.sessionId, { by: "ash", seen: { requestId: chat.requestId, question: chat.question, pick: chat.pick ?? null } });
+      noteTake(sent);
+      noteTaken(sent, () => noteAnswered({ key: `question:${id}`, words: tap.answer, who: base.who, sentence: question }));
     },
   };
 }
@@ -636,6 +654,10 @@ export type NeedsParts = {
   asks?: readonly Ask[];
   /** The time the rows are worded against ("Still open since Tuesday"). Absent means now. */
   now?: number;
+  /** The chats that still exist: a question whose chat is gone has ended (settledNeeds.ts). */
+  chatIds?: ReadonlySet<string>;
+  /** True while the person's own answer to that row is still being shown (answeredNeeds.ts). */
+  answered?: (key: string) => boolean;
 };
 
 function tasksFor(parts: NeedsParts): readonly HomeTask[] {
@@ -656,6 +678,8 @@ export function factsFromParts(parts: NeedsParts): NeedsSources {
     reviews: [...tasks.reviews, ...watchFacts(parts.remote.watches, list)],
     checks: cardFacts(parts.remote.cards, list, parts.remote.decisions),
     asks: quietAskFacts(parts.asks ?? [], quietAskDeps(list, parts.now ?? Date.now())),
+    ...(parts.chatIds ? { chatIds: parts.chatIds } : {}),
+    ...(parts.answered ? { answered: parts.answered } : {}),
     running: runningFacts(parts.delegations, list),
     ownRepos: ownedRepos(list),
     ownRepoByProject: originsByProject(list),
@@ -1009,21 +1033,26 @@ export function useNeedsYou(): NeedsItem[] {
   useSetAsideVersion();
   // sc-20: a quiet ask is raised, answered or moved by the ledger, which any window can write.
   useSyncExternalStore(subscribeAsks, askRevision, askRevision);
+  // A row he let go from itself leaves the list at once (settledNeeds.ts).
+  useSettledNeeds();
   const now = Date.now();
   return withoutSetAside(needsFrom(rows, delegations, now), setAsideDoc(), now);
 }
 
 function needsFrom(rows: readonly NeedsYouRow[], delegations: readonly NeedsDelegation[], now: number): NeedsItem[] {
+  const chats = safeChats();
   return needsYou(factsFromParts({
     remote,
     rows,
     projects: projects(),
-    chats: safeChats(),
+    chats,
     pages: safePages(),
     delegations,
     tasks: liveTasks,
     asks: raisedAsks(askStore().doc()),
     now,
+    chatIds: knownChatIds(),
+    answered: (key) => lastAnswered(key) !== undefined,
   }), now);
 }
 

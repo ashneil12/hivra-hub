@@ -2,6 +2,7 @@
 // leaves the list as soon as the asker has the answer, so the card would vanish mid-tap; this keeps the answer for a
 // short while, so the place it was answered says "Answered: Take A. EXO lead has it." instead of going blank.
 import { useSyncExternalStore } from "react";
+import { noteAnswerGone } from "./settledNeeds";
 
 /** How long an answer is remembered for the line that replaces its card. */
 export const ANSWERED_SHOWN_MS = 8_000;
@@ -17,6 +18,9 @@ function emit(): void {
 }
 
 export function noteAnswered(entry: Omit<AnsweredNeed, "at">, now = Date.now()): void {
+  // The question answered here is finished for good: the row leaves now, and its card says which of the three happened
+  // (settledNeeds.ts), however long the chat takes to stop showing it.
+  noteAnswerGone(entry.key, entry.who, entry.sentence, now);
   last = { ...entry, at: now };
   if (timer !== undefined) clearTimeout(timer);
   timer = setTimeout(() => {

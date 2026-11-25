@@ -534,6 +534,8 @@ import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
 import { TeamWorkspaceSetting } from "./TeamWorkspaceSetting";
 import { TextGenerationSetting } from "./TextGenerationSetting";
 import { ModelConnectionsSetting } from "./ModelConnectionsSetting";
+// Ash, 13 Nov: the update bar on the main pane only shows what he must act on; the last ship's log lives here.
+import { ShipLogButton } from "../../hub/ui/ShipLogButton";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -2349,6 +2351,7 @@ function UpdateRow({
           )}
           {hasUpdate ? "Download" : "Check for updates"}
         </SecondaryButton>
+        <ShipLogButton />
       </div>
     </Row>
   );

@@ -18,6 +18,7 @@ import {
   codexLeadServer,
   leadBlockReason,
   leadPickerChoices,
+  leadStripLine,
   leadSwitchOffer,
 } from "./leadCli";
 import { resetCodingTeamHomes, saveChosenClis } from "../../hub/model/codingTeamHome";
@@ -65,27 +66,50 @@ describe("lead capability", () => {
     }
   });
 
-  it("still says why for an unknown CLI, and stays quiet for an empty capable check", () => {
+  it("still says what it can't do for an unknown CLI, and stays quiet for an empty capable check", () => {
     expect(canLead("")).toBe(false);
     expect(canLead("not-a-cli")).toBe(false);
-    expect(leadBlockReason("not-a-cli")).toBe("not-a-cli cannot lead yet. The app does not know this CLI.");
-    expect(leadBlockReason("  ")).toBe("This CLI cannot lead yet. The app does not know this CLI.");
+    expect(leadBlockReason("not-a-cli")).toBe(
+      "not-a-cli cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself.",
+    );
+    expect(leadBlockReason("  ")).toBe(
+      "This CLI cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself.",
+    );
     expect(hasDelegateTool(TEAM, "not-a-cli")).toBe(false);
   });
 
-  it("says why a CLI cannot lead in plain words, with none of the plumbing", () => {
+  it("says what it can't do in plain words, with none of the plumbing", () => {
     expect(leadBlockReason("opencode")).toBe(
-      "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs.",
+      "OpenCode cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself.",
     );
-    expect(leadBlockReason("cursor")).toBe(
-      "Cursor cannot lead yet. The app could only give it the tools a lead uses by passing it a private key, and it does not do that yet.",
+    expect(leadBlockReason("omp")).toBe(
+      "Oh My Pi cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself.",
     );
     for (const id of HARNESSES.filter((cli) => !canLead(cli))) {
       const said = leadBlockReason(id) ?? "";
+      expect(said).toContain("can't give work to helpers");
       expect(said).not.toMatch(/\b(?:MCP|host|server|secret|session|request|table|token|env|config)\b/i);
       expect(said).not.toMatch(/[\u2013\u2014]/);
     }
     expect(leadBlockReason("not-a-cli")).not.toMatch(/table/i);
+  });
+
+  it("gives the one line he can act on, naming where the coding tool lives", () => {
+    const choices = [
+      { cli: "claude" as const, label: "Claude Code" },
+      { cli: "codex" as const, label: "Codex" },
+    ];
+    const line = leadStripLine("omp", choices) ?? "";
+    expect(line).toBe(
+      "Oh My Pi cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself. " +
+        "Switch this chat's coding tool to Claude Code or Codex in the model menu above the message box. Its history stays.",
+    );
+    expect(leadStripLine("omp", choices, true)).toContain("Its workers and history stay.");
+    expect(leadStripLine("omp", [choices[0]])).toContain("coding tool to Claude Code in the model menu");
+    // A CLI that can lead needs no line, and no choices means nothing he can do: no strip at all.
+    expect(leadStripLine("claude", choices)).toBeNull();
+    expect(leadStripLine("omp", [])).toBeNull();
+    expect(line).not.toMatch(/\b(?:MCP|host|server|secret|session request)\b/i);
   });
 
   it("gives a Codex lead the server and withholds it from a chat that does not lead", () => {

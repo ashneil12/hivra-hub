@@ -8,6 +8,7 @@ import { openFromHome } from "../../home/model/opener";
 import { findMono } from "../../monos/model/mono";
 import { askedAgo, markAsked, NEED_KIND_LABEL, needChatId, needPlace, openNeed, shownNeed } from "../model/needContext";
 import { useNeedsYou } from "../model/needsLive";
+import { dismissNeed } from "../model/settledNeeds";
 import type { NeedsItem } from "../model/needsYou";
 import { inboxNeedsOrder } from "./InboxNeeds";
 import { NeedChoices } from "./NeedChoices";
@@ -68,6 +69,13 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
       {open.label}
     </button>
   ) : null;
+  // A question has no answer the app can tick done for him, so its card offers his own drop (Ash, 13 Nov).
+  const finishButton =
+    item.kind === "question" ? (
+      <button type="button" data-need-let-go="" onClick={() => dismissNeed(item)} className={compact ? QUIET : BORDERED}>
+        Let it go
+      </button>
+    ) : null;
   const canReply = !!item.answer || !!chatId;
   return (
     <article
@@ -95,7 +103,7 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
               {item.detail}
             </p>
           ) : null}
-          {actions.length || open ? (
+          {actions.length || open || finishButton ? (
             <div className="flex flex-wrap items-center gap-2 pt-0.5">
               {actions.map((action, index) => (
                 <button
@@ -110,6 +118,7 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
                 </button>
               ))}
               {openButton}
+              {finishButton}
             </div>
           ) : null}
         </header>
@@ -144,10 +153,20 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
             chatId={chatId}
             choices={choices.length > 0}
             primary={!actions.length}
-            trailing={compact ? openButton : null}
+            trailing={
+              compact ? (
+                <>
+                  {openButton}
+                  {finishButton}
+                </>
+              ) : null
+            }
           />
         ) : compact ? (
-          openButton
+          <div className="flex flex-wrap items-center gap-2">
+            {openButton}
+            {finishButton}
+          </div>
         ) : null}
       </div>
     </article>

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The ship bar: what its buttons do when the app can't do it, and that it is a slim bar or nothing.
+// The ship bar: what it draws (only what Ash must act on), and what its buttons do when the app can't do it.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -7,7 +7,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const ship = vi.hoisted(() => ({
   restartForUpdate: vi.fn(),
   markShipSeen: vi.fn(),
-  acceptShip: vi.fn(),
   revealPath: vi.fn(),
   status: null as unknown,
 }));
@@ -16,9 +15,7 @@ vi.mock("../../../app/model/ship", async (importOriginal) => ({
   useShipStatus: () => ship.status,
   restartForUpdate: ship.restartForUpdate,
   markShipSeen: ship.markShipSeen,
-  acceptShip: ship.acceptShip,
 }));
-vi.mock("../../../app/model/updater", () => ({ readAppVersion: async () => "0.16.5" }));
 vi.mock("../../../platform/tauri/fs", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   revealPath: ship.revealPath,
@@ -83,69 +80,80 @@ it("says when Done or Show the log failed (a rolled-back update keeps Done until
   expect(container.querySelector("[role=alert]")?.textContent).toBe("Couldn't show the log: no such file");
 });
 
-it("asks Ash whether the new build works, and records the answer he gives", async () => {
+it("draws nothing for a build that merely arrived, a build on trial, a receipt or a cancelled update", async () => {
+  for (const current of [
+    { phase: "committed", acceptance: { state: "pending" } },
+    { phase: "committed", acceptance: { state: "yes" } },
+    { phase: "committed", acceptance: { state: "no", note: "Crashes on launch." } },
+    { phase: "cancelled", reason: "Refused." },
+  ]) {
+    ship.status = readShipStatus({
+      enabled: true,
+      current: { id: ID, accepted: true, committed: false, seen: false, log: "/ship/runner.log", ...builds, ...current },
+    });
+    act(() => root.render(createElement(ShipNotice)));
+    expect(container.querySelector("[data-hub-ship]")).toBeNull();
+    expect(container.textContent).toBe("");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+  }
   ship.status = readShipStatus({
     enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
+    holding: true,
+    trial: { id: ID, committed: false },
+    current: { id: ID, phase: "trial", accepted: true, committed: false, seen: false, ...builds },
   });
-  ship.acceptShip.mockResolvedValue(undefined);
-  await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("Hivra updated to 0.16.5. Is everything working?");
-  expect(container.textContent).not.toContain(ID);
-  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
-  // Showing the question accepts nothing and reads nothing: only Ash's answer moves it on.
-  expect(ship.markShipSeen).not.toHaveBeenCalled();
-  expect(ship.acceptShip).not.toHaveBeenCalled();
-  await click("Yes, it works");
-  expect(ship.acceptShip).toHaveBeenCalledWith(ID, "yes");
-  await click("Something's wrong");
-  expect(ship.acceptShip).toHaveBeenCalledWith(ID, "no");
-});
-
-it("says when the answer couldn't be recorded, instead of doing nothing", async () => {
-  ship.status = readShipStatus({
-    enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
-  });
-  ship.acceptShip.mockRejectedValueOnce("This ship didn't commit, so there's no update to answer for.");
-  await act(async () => root.render(createElement(ShipNotice)));
-  await click("Yes, it works");
-  expect(container.querySelector("[role=alert]")?.textContent).toBe(
-    "Couldn't record the answer: This ship didn't commit, so there's no update to answer for.",
-  );
-  // Still there to answer: a failed answer is not an answer.
-  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
-});
-
-it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until the bar leaves", async () => {
-  ship.status = readShipStatus({
-    enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: false, log: "/ship/runner.log", ...builds },
-  });
-  ship.markShipSeen.mockResolvedValue(undefined);
-  await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("MonoCode Hub was updated.");
-  expect(container.textContent).not.toMatch(/@|bbbbbbb|hub\//);
-  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Show the log"]);
-  expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
-  expect(ship.markShipSeen).toHaveBeenCalledWith(ID);
-  // The app now says it's read: the bar stays while it is on screen...
-  ship.status = readShipStatus({
-    enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: true, log: "/ship/runner.log", ...builds },
-  });
-  await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("MonoCode Hub was updated.");
-  expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
-  // ...and the next time the bar mounts it is gone.
-  act(() => root.unmount());
-  root = createRoot(container);
-  await act(async () => root.render(createElement(ShipNotice)));
+  act(() => root.render(createElement(ShipNotice)));
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
   expect(container.textContent).toBe("");
+  expect(ship.markShipSeen).not.toHaveBeenCalled();
 });
 
-// r63 (PM's G2 on 0.16.3): the app-wide ask showed in a project Ash had just made.
-it("a waiting update is a slim bar, and there is no bar when there is no ship", async () => {
+it("a failed or rolled-back trial is a slim bar with its log, and goes once he has read it", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "rolled-back", reason: "The new build didn't commit within 120 s.", accepted: true, committed: false, seen: false, log: "/ship/runner.log", ...builds },
+  });
+  act(() => root.render(createElement(ShipNotice)));
+  const bar = container.querySelector("[data-hub-ship]") as HTMLElement | null;
+  expect(bar).toBeTruthy();
+  expect(bar!.className).toContain("border-b");
+  expect(container.textContent).toContain("An update was rolled back.");
+  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Show the log", "Done"]);
+  // Reading it is his own act: nothing marks it read just for being on screen.
+  expect(ship.markShipSeen).not.toHaveBeenCalled();
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "rolled-back", reason: "The new build didn't commit within 120 s.", accepted: true, committed: false, seen: true, log: "/ship/runner.log", ...builds },
+  });
+  act(() => root.render(createElement(ShipNotice)));
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
+});
+
+it("a failed update is a slim bar with the folder it kept, its log, and no Restart now", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "failed", reason: "The signature didn't match.", accepted: true, committed: false, seen: false, shipDir: "/data/ship/" + ID, log: "/ship/runner.log", ...builds },
+  });
+  ship.revealPath.mockResolvedValueOnce(undefined);
+  await act(async () => root.render(createElement(ShipNotice)));
+  const bar = container.querySelector("[data-hub-ship]");
+  expect(bar).toBeTruthy();
+  expect(container.querySelector("section")?.getAttribute("aria-label")).toBe("Update");
+  expect(container.textContent).toContain("An update failed. The signature didn't match.");
+  expect(container.textContent).toContain(`Everything it kept is in /data/ship/${ID}.`);
+  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Show the log", "Done"]);
+  expect(ship.restartForUpdate).not.toHaveBeenCalled();
+  await click("Show the log");
+  expect(ship.revealPath).toHaveBeenCalledWith("/ship/runner.log");
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "failed", reason: "The signature didn't match.", accepted: true, committed: false, seen: true, shipDir: "/data/ship/" + ID, log: "/ship/runner.log", ...builds },
+  });
+  await act(async () => root.render(createElement(ShipNotice)));
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
+});
+
+it("a waiting update is a slim bar with Restart now, and there is no bar when there is no ship", async () => {
   ship.status = readShipStatus({
     enabled: true,
     pending: { id: ID },
@@ -156,21 +164,12 @@ it("a waiting update is a slim bar, and there is no bar when there is no ship", 
   expect(bar).toBeTruthy();
   expect(bar!.className).toContain("border-b");
   expect(bar!.className).not.toContain("pt-8");
+  expect(container.querySelector("section")?.getAttribute("aria-label")).toBe("Update");
+  expect(container.textContent).toContain("An update to MonoCode Hub is ready.");
+  expect(container.textContent).toContain("Running chats pick up again afterwards.");
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Restart now"]);
   ship.status = readShipStatus(null);
   act(() => root.render(createElement(ShipNotice)));
   expect(container.querySelector("[data-hub-ship]")).toBeNull();
   expect(container.textContent).toBe("");
-});
-
-it("leaves the app-wide ask out where appAsk is off (a project other than the first)", async () => {
-  ship.status = readShipStatus({
-    enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
-  });
-  await act(async () => root.render(createElement(ShipNotice, { inBody: true, appAsk: false })));
-  expect(container.textContent).not.toContain("Is everything working?");
-  expect(container.querySelector("[data-hub-ship]")).toBeNull();
-  await act(async () => root.render(createElement(ShipNotice, { inBody: true, appAsk: true })));
-  expect(container.textContent).toContain("Is everything working?");
 });

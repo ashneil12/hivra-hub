@@ -78,13 +78,20 @@ describe("the lead strip", () => {
     expect(offered()).toEqual(["claude"]);
   });
 
-  it("offers nothing when Ash chose no CLI that can lead, and still says why", () => {
+  it("draws nothing when Ash chose no CLI that can lead, instead of a sentence he cannot act on", () => {
     installedHere(["claude", "codex", "opencode"]);
     saveChosenClis(["opencode", "cursor"]);
     show("opencode");
-    expect(offered()).toEqual([]);
-    expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toContain("cannot lead yet");
-    expect(container.textContent).not.toContain("Switch this chat");
+    expect(container.querySelector("[data-lead-cli-notice]")).toBeNull();
+    expect(container.textContent).toBe("");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("draws nothing for a CLI the app does not know when there is nothing to offer", () => {
+    installedHere(["opencode"]);
+    saveChosenClis(["opencode"]);
+    show("not-a-cli");
+    expect(container.querySelector("[data-lead-cli-notice]")).toBeNull();
   });
 
   it("drops a chosen CLI that is not installed here, and repeats of one he ticked twice", () => {
@@ -142,15 +149,18 @@ describe("the lead strip", () => {
     await act(async () => {});
     expect(offered()).toEqual(["claude"]);
   });
-  it("says it switches this chat, in plain words, and not that it switches the lead", () => {
+  it("says what it means and the one thing he can do, in plain words, and not that it switches the lead", () => {
     installedHere(["claude", "codex"]);
     saveChosenClis(["claude", "codex"]);
     show("opencode");
     const text = container.textContent ?? "";
     expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toBe(
-      "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.",
+      "OpenCode cannot lead yet: it can chat here, but it can't give work to helpers, so it does every job itself. " +
+        "Switch this chat's coding tool to Claude Code or Codex in the model menu above the message box. Its history stays.",
     );
     expect(text).not.toContain("Switch the lead");
+    expect(text).toMatch(/coding tool/);
+    expect(text).toMatch(/above the message box/);
     expect(text).not.toMatch(/\b(?:MCP|host|secret|session request|lead table)\b/i);
     expect(text).not.toMatch(/[\u2013\u2014]/);
   });
@@ -186,12 +196,4 @@ describe("the lead strip", () => {
     expect(leadStripDismissed("chat-2")).toBe(false);
   });
 
-  it("dismisses a strip that has no CLI to offer, too", () => {
-    installedHere(["opencode"]);
-    saveChosenClis(["opencode"]);
-    show("opencode");
-    expect(offered()).toEqual([]);
-    act(() => container.querySelector<HTMLButtonElement>("[data-lead-cli-dismiss]")?.click());
-    expect(container.querySelector("[data-lead-cli-notice]")).toBeNull();
-  });
 });

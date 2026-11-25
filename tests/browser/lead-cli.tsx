@@ -5,7 +5,7 @@ import { type HarnessId } from "../../src/features/sessions/model/session";
 import "../../src/styles/index.css";
 import { installLeadStripHarnesses } from "./leadCliFixtureSetup";
 
-installLeadStripHarnesses();
+installLeadStripHarnesses({ noneAble: new URLSearchParams(location.search).has("none") });
 
 function Fixture() {
   const [harness, setHarness] = useState<HarnessId>("opencode");
