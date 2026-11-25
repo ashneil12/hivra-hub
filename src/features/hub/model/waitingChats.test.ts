@@ -14,6 +14,7 @@ import {
   findWaitingChat,
   gateLog,
   forgetWaitingChat,
+  knownChatIds,
   noteChats,
   openWaitingChat,
   pruneWaitingChats,
@@ -124,6 +125,21 @@ describe("which chats are waiting", () => {
     noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() })], 1000);
     noteChats([chat({ id: "s1", busy: false })], 2000);
     expect(waitingChats()).toEqual([]);
+  });
+
+  it("still knows a chat exists after it stops waiting; only archive, delete or a missing saved conversation ends it", async () => {
+    noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() })], 1000);
+    noteChats([chat({ id: "s1", busy: false })], 2000);
+    expect(waitingChats()).toEqual([]);
+    expect(knownChatIds().has("s1")).toBe(true);
+    forgetWaitingChat("s1");
+    expect(knownChatIds().has("s1")).toBe(false);
+
+    noteChats([markerChat("gone", "Needs Ash: Ship it?\nMy pick: Yes.")], 3000);
+    resetWaitingChats(); // the app restarts before the prune has checked the saved conversation
+    expect(knownChatIds().has("gone")).toBe(true);
+    await pruneWaitingChats(async () => false);
+    expect(knownChatIds().has("gone")).toBe(false);
   });
 });
 

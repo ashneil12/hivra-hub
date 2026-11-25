@@ -46,9 +46,9 @@ describe("what Today says about a ship", () => {
     expect(shipCardView({ ...status({ phase: "committed" }), enabled: false })).toBeNull();
   });
 
-  it("explains the trial while this build holds", () => {
+  it("says a build on trial is drawn nowhere", () => {
     const view = shipCardView(status({ phase: "trial" }, { holding: true, trial: { id: ID, committed: false } }));
-    expect(view?.text).toBe("Checking the new build.");
+    expect(view).toBeNull();
     expect(view?.restartNow).toBeUndefined();
   });
 
@@ -61,48 +61,45 @@ describe("what Today says about a ship", () => {
     expect(view?.detail).toContain("(2 running now)");
   });
 
-  it("asks Ash whether the update works, naming the version and no ids; nothing calls it accepted before he answers", () => {
-    // r63 (Critiquito): "shipped afe42a3 from main (ship …)" became the version alone.
-    const view = shipCardView(status({ phase: "committed" }), "0.16.5");
-    expect(view).toMatchObject({ text: "Hivra updated to 0.16.5. Is everything working?", accept: true });
-    expect(view?.detail).toBeUndefined();
-    expect(view?.text).not.toMatch(/bbbbbbb|hub\/1b-ship|shipped/);
-    expect(shipCardView(status({ phase: "committed" }))?.text).toBe("Hivra was updated. Is everything working?");
-    expect(view?.once).toBeUndefined();
-    expect(view?.dismiss).toBeUndefined();
-    // A receipt already read doesn't answer it: the question stays until he does.
-    expect(shipCardView(status({ phase: "committed", seen: true }))?.accept).toBe(true);
-  });
-
-  it("shows the update once he says it works, and notes a no until it's read", () => {
-    const yes = shipCardView(status({ phase: "committed", acceptance: { state: "yes" } }));
-    expect(yes).toMatchObject({ text: "MonoCode Hub was updated.", log: "/ship/runner.log", once: true });
-    expect(yes?.accept).toBeUndefined();
-    expect(yes?.dismiss).toBeUndefined();
-    expect(JSON.stringify([yes?.text, yes?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
+  it("stays quiet for anything that is not his move", () => {
+    expect(shipCardView(status({ phase: "committed" }))).toBeNull();
+    expect(shipCardView(status({ phase: "committed", acceptance: { state: "yes" } }))).toBeNull();
+    expect(shipCardView(status({ phase: "committed", acceptance: { state: "no", note: "Crashes on launch." } }))).toBeNull();
+    expect(shipCardView(status({ phase: "committed", seen: true }))).toBeNull();
     expect(shipCardView(status({ phase: "committed", acceptance: { state: "yes" }, seen: true }))).toBeNull();
-    const no = shipCardView(status({ phase: "committed", acceptance: { state: "no", note: "Crashes on launch." } }));
-    expect(no).toMatchObject({ text: "Noted: something's wrong with this build. Crashes on launch.", dismiss: true });
-    expect(no?.accept).toBeUndefined();
-    expect(no?.log).toBe("/ship/runner.log");
-    expect(no?.detail).toBe(`The answer is kept with ship ${ID}.`);
-    expect(shipCardView(status({ phase: "committed", acceptance: { state: "no" }, seen: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "committed", acceptance: { state: "no", note: "Crashes on launch." }, seen: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "cancelled", reason: "Refused." }))).toBeNull();
+    expect(shipCardView(status({ phase: "cancelled", reason: "Refused.", seen: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "staged", accepted: false }))).toBeNull();
+    expect(shipCardView(status({ phase: "waiting" }, { pending: { id: "another-ship", force: false } }))).toBeNull();
+    expect(shipCardView(status({ phase: "waiting", accepted: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "trial", seen: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "swapping" }))).toBeNull();
   });
 
-  it("says each receipt in plain words, with no branch or commit; the rest until read", () => {
+  it("says a failed or rolled-back change until he reads it, with its log and no answer buttons", () => {
     const rolled = shipCardView(status({ phase: "rolled-back", reason: "The new build didn't commit within 120 s." }));
     expect(rolled?.text).toBe("An update was rolled back. The new build didn't commit within 120 s.");
     expect(rolled?.detail).toBe("Back on the build before it, with the database as it was.");
+    expect(rolled?.log).toBe("/ship/runner.log");
     expect(rolled?.dismiss).toBe(true);
-    for (const phase of ["rolled-back", "cancelled", "failed"])
-      expect(JSON.stringify([shipCardView(status({ phase, reason: "r" }))?.text, shipCardView(status({ phase, reason: "r" }))?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
-    expect(shipCardView(status({ phase: "cancelled", reason: "Refused." }))?.detail).toBe("Nothing changed.");
-    expect(shipCardView(status({ phase: "failed", reason: "x", shipDir: "/ship" }))?.detail).toContain("/ship");
+    expect(rolled?.accept).toBeUndefined();
+    expect(rolled?.once).toBeUndefined();
     expect(shipCardView(status({ phase: "rolled-back", seen: true }))).toBeNull();
-    // Mid-swap there is nothing to say yet (and nothing to press).
-    expect(shipCardView(status({ phase: "swapping" }))).toBeNull();
+    const failed = shipCardView(status({ phase: "failed", reason: "x", shipDir: "/ship" }));
+    expect(failed?.text).toBe("An update failed. x");
+    expect(failed?.text).not.toMatch(/bbbbbbb|hub\//);
+    expect(failed?.detail).toBe("Everything it kept is in /ship.");
+    expect(failed?.log).toBe("/ship/runner.log");
+    expect(failed?.dismiss).toBe(true);
+    expect(failed?.accept).toBeUndefined();
+    expect(failed?.once).toBeUndefined();
+    expect(shipCardView(status({ phase: "failed", reason: "x", seen: true }))).toBeNull();
+    for (const phase of ["rolled-back", "failed"])
+      expect(JSON.stringify([shipCardView(status({ phase, reason: "r" }))?.text, shipCardView(status({ phase, reason: "r" }))?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
   });
 });
+
 
 describe("a build on trial holds from its first render", () => {
   it("reads the hold the app handed the window before its scripts ran", async () => {

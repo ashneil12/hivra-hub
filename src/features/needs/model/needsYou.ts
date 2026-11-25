@@ -21,6 +21,7 @@ import { callText, redListCategory } from "../../autopilot/model/redList";
 import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerRules";
 import { foldDecisionKey, isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
 import { REPO_ALIAS } from "./repoAlias";
+import { adoptQuestions, visibleWithHeld } from "./settledNeeds";
 
 export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check" | "ask";
 
@@ -176,6 +177,13 @@ export type NeedsSources = {
   ownRepoByProject?: ReadonlyMap<string, string>;
   /** Hub project ids. A review with no repo counts when its project is one of these. */
   knownProjects?: ReadonlySet<string>;
+  /**
+   * The chats that still exist. A question whose chat is gone has ended (settledNeeds.ts); absent, nothing is read as
+   * gone.
+   */
+  chatIds?: ReadonlySet<string>;
+  /** True while the person's own answer to that row is still being shown (answeredNeeds.ts lastAnswered). */
+  answered?: (key: string) => boolean;
   /** Present only so a caller can prove they add nothing. Never read. */
   hubWork?: unknown;
   hubBuilds?: unknown;
@@ -644,7 +652,11 @@ function assemble(sources: NeedsSources, now: number): { items: NeedsItem[]; run
 /** Build the list and remember it, so the counts agree with what this call returned. */
 export function needsYou(sources: NeedsSources, now: number): NeedsItem[] {
   const next = assemble(sources, now);
-  items = next.items;
+  // A question stays until he answers it, lets it go, or its work ends (settledNeeds.ts): the read before this one says
+  // which of the three a row that just left did, and holds it when it did none of them. Only a read that knows the
+  // chats that still exist (`chatIds`) can tell an ended question from a held one, so any other read lists as it always
+  // did.
+  items = sources.chatIds ? adoptQuestions({ sources, previous: items, next: next.items, now }) : next.items;
   running = next.running;
   published = true;
   return items;
@@ -652,7 +664,14 @@ export function needsYou(sources: NeedsSources, now: number): NeedsItem[] {
 
 /** The same list, without changing the counts the screen is showing. */
 export function needsYouQuiet(sources: NeedsSources, now: number): NeedsItem[] {
-  return assemble(sources, now).items;
+  return visibleWithHeld(assemble(sources, now).items);
+}
+
+/** Tests: forget what was published. */
+export function resetNeedsYouForTest(): void {
+  items = [];
+  running = [];
+  published = false;
 }
 
 /** True once a screen has published the list. A count note before that must not invent one. */

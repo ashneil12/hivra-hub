@@ -48,8 +48,6 @@ export const NO_SHIP: ShipStatus = {
 };
 
 export const SHIP_CHANGED = "ship:changed";
-/** How long after an update the bar asks whether it works. */
-export const ASK_FRESH_MS = 2 * 60 * 60 * 1000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -218,22 +216,17 @@ export type ShipCardView = {
   restartNow?: boolean;
   log?: string;
   dismiss?: boolean;
-  /** Asks Ash whether the build works: Yes, it works / Something's wrong. It stays until he answers. */
-  accept?: boolean;
-  /** Shown once: the bar marks it read as soon as it is on screen, and it is gone next time (a committed update). */
-  once?: boolean;
 };
 
-/** What the bar says about Ship, if anything: the trial, a waiting update, Ash's own answer, or a receipt not yet read. */
-export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardView | null {
+/**
+ * What the bar says about Ship, if anything: only what Ash must act on, an update waiting for a quiet moment (with
+ * Restart now) or a trial that failed or was rolled back (until he reads it). A build that merely arrived, a trial in
+ * progress, his own answer and a cancelled update draw nothing (Ash, 13 Nov: breakage shows on the dev copy first, so
+ * the area was just a waste of the main pane). The receipt and its log live in Settings, beside the version.
+ */
+export function shipCardView(status: ShipStatus): ShipCardView | null {
   if (!status.enabled) return null;
   const current = status.current;
-  if (status.holding && status.trial)
-    return {
-      id: status.trial.id,
-      text: "Checking the new build.",
-      detail: "Habits, automations and cut chats wait until its window, database and app bridge are up.",
-    };
   if (!current) return null;
   if (status.pending?.id === current.id && (current.phase === "staged" || current.phase === "waiting")) {
     const running = current.deferred?.inFlight;
@@ -244,54 +237,15 @@ export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardV
       restartNow: true,
     };
   }
-  // Ash's own answer (I4): the update asks whether the build works, and it stays until he says. It shows even if the
-  // receipt was already read: nothing calls a ship accepted until he answers yes, and "pending" is the default.
-  const answer = current.acceptance;
-  // r63 (Critiquito): no commit, branch or ship id in the ask, just the version Ash is now on.
-  // Ash 13 Nov: the ask sat there for hours over many fast ships of the same version. It asks only while the update is
-  // fresh (two hours); after that, silence means it works.
-  const shippedAt = Date.parse(current.updatedAt ?? current.createdAt ?? "");
-  const fresh = !Number.isFinite(shippedAt) || Date.now() - shippedAt < ASK_FRESH_MS;
-  if (current.phase === "committed" && answer.state === "pending" && fresh) {
-    const version = appVersion && appVersion !== "0.0.0" ? appVersion.trim() : "";
-    return {
-      id: current.id,
-      text: version ? `Hivra updated to ${version}. Is everything working?` : "Hivra was updated. Is everything working?",
-      accept: true,
-    };
-  }
   if (current.seen) return null;
   // Plain words, no branch or commit (Critiquito/Ash, 22 Oct): which build it is lives in the log.
   const reason = current.reason ? ` ${current.reason}` : "";
   switch (current.phase) {
-    case "committed":
-      if (answer.state === "no")
-        return {
-          id: current.id,
-          text: `Noted: something's wrong with this build.${answer.note ? ` ${answer.note}` : ""}`,
-          detail: `The answer is kept with ship ${current.id}.`,
-          log: current.log,
-          dismiss: true,
-        };
-      return {
-        id: current.id,
-        text: "MonoCode Hub was updated.",
-        log: current.log,
-        once: true,
-      };
     case "rolled-back":
       return {
         id: current.id,
         text: `An update was rolled back.${reason}`,
         detail: "Back on the build before it, with the database as it was.",
-        log: current.log,
-        dismiss: true,
-      };
-    case "cancelled":
-      return {
-        id: current.id,
-        text: `An update was called off.${reason}`,
-        detail: "Nothing changed.",
         log: current.log,
         dismiss: true,
       };

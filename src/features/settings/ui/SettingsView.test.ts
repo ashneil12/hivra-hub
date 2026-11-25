@@ -46,6 +46,17 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(async () => true) }));
+// The update bar on the main pane draws only what he must act on; the last ship's log lives beside the version here.
+vi.mock("../../../app/model/ship", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useShipStatus: () => ({
+    enabled: true,
+    holding: false,
+    trial: null,
+    pending: null,
+    current: { log: "/ship/runner.log" },
+  }),
+}));
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "claude" || id === "cursor",
   hasProbedHarnessAvailability: () => true,
@@ -137,6 +148,13 @@ describe("settings pages", () => {
     expect(words).toContain("Failed turns, failed checks, approvals and questions come through");
     // only a finished-agent banner is kept: the old line promised every routine banner and sound
     expect(words).not.toContain("Routine banners");
+  });
+
+  it("keeps the update log beside the version, where the bar's receipts went", async () => {
+    await render("general");
+    const row = container.querySelector<HTMLElement>('[data-setting-id="update"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector("[data-ship-log]")?.textContent).toBe("Show the update log");
   });
 
   it("shows which build this is in the footer of every page, only inside the app", async () => {

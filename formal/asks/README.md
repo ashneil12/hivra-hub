@@ -55,8 +55,9 @@ a first mate's own chats and a coding team's chat with its lead; never a room, a
 
 1. Skip a message from before the ledger began (`doc.since`), a draft, an app note (`[MonoCode ` prefix), a slash command, a
    bare "ok" or "thanks" (`asks.ts nothingToHear`).
-2. **Quick reading at once** (`wideReading.ts wideAsks`, sc-18): each sentence the rules read as an ask (`asks.ts looksLikeAsk`:
-   `can you`, `please`, `make sure`, `I want`, `we should`, a question mark, a leading verb from a fixed list), **plus each
+2. **Quick reading at once** (`wideReading.ts wideAsks`, sc-18): each sentence the rules read as an ask (`asks.ts looksLikeAsk`
+   on `asksSomething`: a question — a question mark or a question word — or a request (`can you`, `please`, `make sure`, `I want`,
+   `we should`, a leading verb from a fixed list); a statement asks nothing), **plus each
    sentence the old hub ledger's regex found** (a complaint like "the search is slow", a bare question) that none of those
    already is, in message order. It reads a short two-sentence message as two asks (the rules alone take it whole).
 3. **Always written, loud or quiet** (`useAskLedger.ts`): every ask the quick reading holds is written. Whether the chat shows
@@ -64,8 +65,9 @@ a first mate's own chats and a coding team's chat with its lead; never a room, a
    or 3+ sentences): when it says no, the rows are **quiet** (gap A6 fixed, sc-18).
 4. **Model reading** for a long message, in the background (`isolatedCompaction`, a Claude text call with a 180 s limit,
    `app/hooks/useMonoTrees.ts:26`): `hearPrompt` asks for a JSON list of `{quote, summary, kind}`. `parseHeard` keeps an item only
-   if its quote is in the message word for word (so the model cannot invent an ask). At most `MODEL_TRIES = 2` tries; the
-   second waits until the chat is idle. Each try, good or bad, is counted.
+   if its quote is in the message word for word (so the model cannot invent an ask), and only a question (`asks.ts isQuestion`)
+   may keep `kind: "answer"`: a statement the model heard as a question becomes `do`, so it can never draw a question row. At
+   most `MODEL_TRIES = 2` tries; the second waits until the chat is idle. Each try, good or bad, is counted.
 5. **Safety net** (`hearMessage`): any sentence the rules read as an ask that no model quote covers (60% word overlap) is added
    as a `maybe`, at most 6 per message.
 6. **Replacement** (`withHeard`): hearing a message again replaces that message's rows nobody has touched with the new

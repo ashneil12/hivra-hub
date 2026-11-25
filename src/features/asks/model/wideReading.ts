@@ -8,11 +8,11 @@
 // This decides which rows are written. Whether the chat shows a receipt for them is still the rules' own call
 // (useAskLedger.ts worthKeeping on rulesAsks): a short message is written quietly, as a lone short ask always was.
 import { extractAsks } from "../../hub/model/askLedger";
-import { clipQuote, clipSummary, covers, looksLikeAsk, nothingToHear, rulesAsks, sameAsk, sentences, type HeardAsk } from "./asks";
+import { clipQuote, clipSummary, covers, isQuestion, looksLikeAsk, nothingToHear, rulesAsks, sameAsk, sentences, type HeardAsk } from "./asks";
 
 /** One sentence as a heard ask, the way the rules' own sentence reading writes it. */
 function heardSentence(sentence: string): HeardAsk {
-  return { quote: clipQuote(sentence), summary: clipSummary(sentence), kind: /\?\s*$/.test(sentence.trim()) ? "answer" : "do" };
+  return { quote: clipQuote(sentence), summary: clipSummary(sentence), kind: isQuestion(sentence) ? "answer" : "do" };
 }
 
 /** The same ask worded alike: equal or one inside the other, or most of the same words in a sentence of about the same size. */

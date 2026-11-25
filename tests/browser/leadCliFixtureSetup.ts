@@ -4,10 +4,12 @@ import { HARNESSES, type HarnessId } from "../../src/features/sessions/model/ses
 
 /**
  * Every CLI is installed, and Ash has ticked Claude Code, Cursor and Pi. The lead strip may offer only Claude Code,
- * the one ticked CLI that can lead. See leadCliStrip.ts for the wording and the CLIs it must not offer.
+ * the one ticked CLI that can lead. With `noneAble`, he ticked only CLI that cannot lead, so the strip must not be
+ * drawn at all: there is nothing he could do about it.
+ * See leadCliStrip.ts for the wording and the CLIs it must not offer.
  */
-export function installLeadStripHarnesses(): void {
+export function installLeadStripHarnesses({ noneAble = false }: { noneAble?: boolean } = {}): void {
   const availability = Object.fromEntries(HARNESSES.map((id) => [id, true])) as Record<HarnessId, boolean>;
   setHarnessAvailability(availability);
-  saveChosenClis(["claude", "cursor", "pi"]);
+  saveChosenClis(noneAble ? ["opencode", "cursor"] : ["claude", "cursor", "pi"]);
 }

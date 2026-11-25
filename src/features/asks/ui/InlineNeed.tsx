@@ -11,8 +11,10 @@ import { askedAgo, NEED_KIND_LABEL } from "../../needs/model/needContext";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import type { RollupCard } from "../../needs/model/needsRollup";
 import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
+import { foldedLine } from "../../needs/model/settledNeeds";
 import { findNeed, needKeyOf } from "../model/needLinks";
 import { lensTag } from "../model/chiefLens";
+import { FinishedNeeds } from "../../needs/ui/FinishedNeeds";
 
 function flat(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -28,11 +30,12 @@ export function InlineNeed({ needKey, label, number }: { needKey: string; label:
   const answered = useLastAnswered(seen.current);
   if (!item) {
     if (answered) return <AnsweredLine entry={answered} className="my-1.5 font-sans" />;
-    const words = flat(label);
+    // Why it left, in plain words: he answered it, he let it go, or the work behind it ended (settledNeeds.ts). A
+    // question an async result took out of the chat is not retired at all: it stays on the list saying so.
     return (
       <p data-inline-need="settled" className="my-1.5 flex items-center gap-2 font-sans text-[12px] leading-5 text-content/60">
         <Check aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
-        <span className="min-w-0">{words ? `No longer needs you: ${words}` : "No longer needs you."}</span>
+        <span className="min-w-0">{foldedLine(seen.current, flat(label))}</span>
       </p>
     );
   }
@@ -88,6 +91,7 @@ export function NeedsRollupCard({ card, embedded = false }: { card: RollupCard; 
         <InlineNeed key={item.key} needKey={item.key} label={item.sentence} number={many ? index + 1 : undefined} />
       ))}
       {card.more > 0 ? <p className="text-[12px] leading-5 text-content/60">And {card.more} more in Needs you.</p> : null}
+      <FinishedNeeds className="pt-1" />
     </section>
   );
 }

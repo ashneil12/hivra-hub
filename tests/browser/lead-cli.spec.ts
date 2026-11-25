@@ -40,3 +40,9 @@ test("Ash can dismiss the strip, and it stays dismissed for the chat after a rel
   await expect(page.locator("[data-harness]")).toHaveText("opencode");
   await expect(notice).toHaveCount(0);
 });
+
+test("draws nothing when no CLI he chose can lead, instead of a sentence he cannot act on", async ({ page }) => {
+  await page.goto("/tests/browser/lead-cli.html?none");
+  await expect(page.locator("[data-harness]")).toHaveText("opencode");
+  await expect(page.locator("[data-lead-cli-notice]")).toHaveCount(0);
+});

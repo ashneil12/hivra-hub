@@ -21,24 +21,25 @@ export type LeadCapability = {
 };
 
 // What a person reads in the lead strip, so no plumbing words: no MCP, host, secret or session request.
-// Ash (12 Nov): "I have no idea what this means". Say what it can and can't do, not why.
-const NO_HOST = "does not have direct helper tools attached. It can use the app’s commands to hand off jobs.";
-const SECRET_IN_REQUEST = NO_HOST;
+// Ash (13 Nov): "it says Oh My Pi can chat here, but it can't hand jobs to helpers yet. No further information is
+// given ... I have no idea what that means." So the line says what it means for him and the one thing he can do
+// (leadStripLine), and a strip with nothing he can do is not drawn at all.
+const NO_HELPERS = "it can chat here, but it can't give work to helpers, so it does every job itself.";
 /** Names a person knows, where the CLI's own short name is unclear. */
 const PLAIN_NAME: Partial<Record<HarnessId, string>> = { omp: "Oh My Pi" };
 
 export const LEAD_CAPABILITY: Record<HarnessId, LeadCapability> = {
   claude: { leads: true, attach: "claude-args", reason: "" },
   codex: { leads: true, attach: "codex-config", reason: "" },
-  cursor: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  grok: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  hermes: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  devin: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  antigravity: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  fx: { leads: false, attach: "none", reason: SECRET_IN_REQUEST },
-  opencode: { leads: false, attach: "none", reason: NO_HOST },
-  pi: { leads: false, attach: "none", reason: NO_HOST },
-  omp: { leads: false, attach: "none", reason: NO_HOST },
+  cursor: { leads: false, attach: "none", reason: NO_HELPERS },
+  grok: { leads: false, attach: "none", reason: NO_HELPERS },
+  hermes: { leads: false, attach: "none", reason: NO_HELPERS },
+  devin: { leads: false, attach: "none", reason: NO_HELPERS },
+  antigravity: { leads: false, attach: "none", reason: NO_HELPERS },
+  fx: { leads: false, attach: "none", reason: NO_HELPERS },
+  opencode: { leads: false, attach: "none", reason: NO_HELPERS },
+  pi: { leads: false, attach: "none", reason: NO_HELPERS },
+  omp: { leads: false, attach: "none", reason: NO_HELPERS },
 };
 
 /** Env names Codex passes through to the monocode server. Never the values. */
@@ -54,16 +55,31 @@ export function canLead(harness: string): boolean {
   return harness in LEAD_CAPABILITY && LEAD_CAPABILITY[harness as HarnessId].leads;
 }
 
-/** The sentence a lead chat shows when this CLI cannot lead. Null when it can. */
+/** What this chat can't do, in plain words. Null when this CLI can lead. */
 export function leadBlockReason(harness: string): string | null {
   if (canLead(harness)) return null;
   const known = (HARNESSES as readonly string[]).includes(harness);
   const name = known ? PLAIN_NAME[harness as HarnessId] ?? HARNESS_TITLE[harness as HarnessId] : harness.trim() || "This CLI";
-  const reason =
-    known && harness in LEAD_CAPABILITY
-      ? LEAD_CAPABILITY[harness as HarnessId].reason
-      : "The app does not know this CLI.";
-  return known && harness in LEAD_CAPABILITY ? `${name} ${reason}` : `${name} cannot lead yet. ${reason}`;
+  const reason = known && harness in LEAD_CAPABILITY ? LEAD_CAPABILITY[harness as HarnessId].reason : NO_HELPERS;
+  return `${name} cannot lead yet: ${reason}`;
+}
+
+/**
+ * The one line a lead strip shows: what this chat can't do, the one thing he can do about it, and where that setting
+ * lives (a first mate's coding tool is the model menu above the message box). Null when this CLI can lead or there is
+ * nothing to offer, so a strip is never a sentence he cannot act on.
+ */
+export function leadStripLine(
+  current: string,
+  choices: readonly LeadChoice[],
+  hasCrew = false,
+): string | null {
+  const reason = leadBlockReason(current);
+  if (!reason || choices.length === 0) return null;
+  const names = choices.map((choice) => choice.label);
+  const which = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+  const keeps = hasCrew ? "Its workers and history stay." : "Its history stays.";
+  return `${reason} Switch this chat's coding tool to ${which} in the model menu above the message box. ${keeps}`;
 }
 
 export type LeadCliPresence = {
@@ -101,7 +117,8 @@ export function chosenLeadPresence(
 
 /**
  * A switch when the current CLI cannot lead. The choices are the capable CLIs
- * that are here. Null when this CLI can already lead.
+ * that are here. Null when this CLI can already lead, or when there is no
+ * capable CLI he chose and has: then he can do nothing about it, so no strip.
  */
 export function leadSwitchOffer(
   current: string,
@@ -109,6 +126,8 @@ export function leadSwitchOffer(
 ): { reason: string; choices: LeadChoice[] } | null {
   const reason = leadBlockReason(current);
   if (!reason) return null;
+  // The offer always reports what is true and what is available; a strip is drawn only when a pick can be made
+  // (leadStripLine), so a chat with nothing to offer shows nothing.
   return { reason, choices: leadPickerChoices(present) };
 }
 

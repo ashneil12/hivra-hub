@@ -125,6 +125,10 @@ let version = 0;
 const listeners = new Set<() => void>();
 /** Live questions seen in this run (a stored one from before a restart is not among them). */
 const seenLive = new Set<string>();
+/** Chats the app has reported this run. They still exist until the app's remove path or the launch prune says one is gone. */
+const reportedChats = new Set<string>();
+/** Chats the app's remove path or launch prune said are gone. A chat that merely stopped waiting is not among them. */
+const endedChats = new Set<string>();
 const liveKey = (sessionId: string, requestId: number | undefined) => `${sessionId}#${requestId ?? ""}`;
 
 function load(): Record<string, WaitingEntry> {
@@ -277,6 +281,9 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
   let next: Record<string, WaitingEntry> | undefined;
   const edit = () => (next ??= { ...prev });
   for (const chat of chats) {
+    // A chat the app reports still exists, whatever its waiting state is. Only the remove paths below end it.
+    reportedChats.add(chat.id);
+    endedChats.delete(chat.id);
     if (!counts(chat)) continue;
     const old = prev[chat.id];
     const read = readChat(chat);
@@ -400,6 +407,17 @@ export function findWaitingChat(sessionId: string): WaitingChat | undefined {
   return e && admitted(e) ? describe(e) : undefined;
 }
 
+/**
+ * The chats the app knows still exist: every chat reported this run, plus a stored waiting chat until the launch prune
+ * can check it. A chat that moved on and stopped waiting is still here; only archive/delete or a missing saved
+ * conversation takes it out. Needs you uses this to tell a question held because its chat moved on from work that ended.
+ */
+export function knownChatIds(): ReadonlySet<string> {
+  const ids = new Set<string>([...reportedChats, ...Object.keys(load())]);
+  for (const id of endedChats) ids.delete(id);
+  return ids;
+}
+
 function drop(sessionId: string): void {
   const prev = load();
   if (!(sessionId in prev)) return;
@@ -410,6 +428,8 @@ function drop(sessionId: string): void {
 
 /** The chat was archived or deleted: it doesn't wait on Ash any more. */
 export function forgetWaitingChat(sessionId: string): void {
+  reportedChats.delete(sessionId);
+  endedChats.add(sessionId);
   drop(sessionId);
 }
 
@@ -420,7 +440,11 @@ export function forgetWaitingChat(sessionId: string): void {
 export async function pruneWaitingChats(exists: (sessionId: string) => Promise<boolean>): Promise<void> {
   for (const sessionId of Object.keys(load())) {
     const there = await exists(sessionId).catch(() => true);
-    if (!there) drop(sessionId);
+    if (!there) {
+      reportedChats.delete(sessionId);
+      endedChats.add(sessionId);
+      drop(sessionId);
+    }
   }
 }
 
@@ -870,6 +894,8 @@ export function resetWaitingChats(): void {
   host = undefined;
   router = undefined;
   seenLive.clear();
+  reportedChats.clear();
+  endedChats.clear();
   gateLogged.clear();
   version += 1;
 }
