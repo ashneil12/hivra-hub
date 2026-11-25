@@ -3,6 +3,17 @@
 // DROPWAVE_PI_TOKEN_<n> per model. This file holds no secret: the router keeps the real key, and
 // each token works only on that loopback router while this session lives.
 export default function dropwaveRoutes(pi) {
+  // Pi/OMP may run tools without an approval event. Refuse direct password-store probes before execution.
+  // This supplements the app's credential guard; it does not parse arbitrary shell programs.
+  pi.on("tool_call", event => {
+    if (!["bash", "shell", "execute"].includes(event.toolName)) return;
+    const command = event.input?.command ?? event.input?.script;
+    if (typeof command !== "string") return;
+    const plain = command.replace(/["'\\`]/g, "");
+    if (/(?:^|[\s;&|($])(?:\/usr\/bin\/)?security\b[^;&|\n]*\b(?:find-(?:generic|internet)-password|dump-keychain|export|unlock-keychain)\b/i.test(plain)) {
+      return { block: true, reason: "Blocked by Dropwave: do not read saved passwords or keys. Use the configured model connection. If it is unavailable, report the missing connection to your first mate; do not probe Keychain or environment secrets." };
+    }
+  });
   let routes = [];
   try {
     routes = JSON.parse(process.env.DROPWAVE_PI_ROUTES || "[]");

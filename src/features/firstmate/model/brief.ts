@@ -260,6 +260,7 @@ export function renderBrief(
       ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim(), extras.originalRequestChars)}`]
       : []),
     `## Spec\n${parts.spec.trim()}`,
+    "## Runtime and evidence\nUse the app's documented commands (`monocode app --help`); never invoke its binary without a command or open another daily app. Verify in an isolated dev copy. Use configured provider connections: never probe Keychain, saved credentials, or environment secrets to obtain a key. If a connection is missing, report it to your first mate. State exactly what a check exercised. Capturing or closing a test ask proves only tracking, not extraction accuracy, delegation, delivery, or the full workflow. A timeout or failed command is not successful work. Read the actual waiting explanation from tasks.status before describing a queue; never infer worker capacity from how many jobs are currently running.",
     // PT-6: written by code from the project's own files, every line of them indented (briefSpec.ts).
     ...(spec ? [spec] : []),
     // SC-4: what the worker must pass, and what it must leave alone. Written by code, in lists a line can't break out of.
@@ -297,6 +298,7 @@ export const FIXED_SECTIONS = [
   "Checks that must pass",
   "Do not touch",
   "Fan-out contract",
+  "Runtime and evidence",
   "Status protocol",
   "Steering",
   "Skills",

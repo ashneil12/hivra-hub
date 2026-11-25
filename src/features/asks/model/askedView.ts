@@ -3,6 +3,7 @@
 // `open handled parked dropped`); it now reads the same asks the first mates work on, so what a first mate or a finished
 // job says about an ask shows there. A row keeps the shape the list had (a short title, his words, when, and one of the
 // four words) and adds what Ledger A knows beyond it (working, waiting on him, a maybe).
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
 import { isOpen, type Ask, type AskDoc, type AskKind, type AskStatus } from "./asks";
 
 export type AskedRow = {
@@ -84,7 +85,7 @@ export function askedRow(ask: Ask): AskedRow {
 /** The asks on the list, newest first: everything but what he dropped (a "Not an ask" is gone from it too). */
 export function askedRows(doc: AskDoc): AskedRow[] {
   return doc.asks
-    .filter((ask) => ask.status !== "dropped")
+    .filter((ask) => ask.status !== "dropped" && !isBackgroundMessage(ask.quote))
     .map(askedRow)
     .reverse();
 }

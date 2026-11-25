@@ -127,7 +127,7 @@ export function LaunchedSessionCard({
   const status = stalled
     ? STALLED
     : view?.state === "waiting"
-      ? { ...STATUS.waiting, label: view.forTask ? "Waiting for another task" : STATUS.waiting.label }
+      ? { ...STATUS.waiting, label: view.waitingLine ?? (view.forTask ? "Waiting for another task" : "Waiting to start") }
       : view
         ? STATUS[view.state]
         : undefined;
@@ -149,7 +149,7 @@ export function LaunchedSessionCard({
       title={[status?.label, ranLine, launch.from, launch.cliFallback].filter(Boolean).join(" · ")}
       onClick={onOpen}
       disabled={!onOpen}
-      className={`@container/card flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
+      className={`@container/card flex min-w-0 max-w-[40rem] flex-1 basis-full flex-wrap items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
     >
       {status?.icon ?? (
         <Chatting
@@ -158,7 +158,7 @@ export function LaunchedSessionCard({
         />
       )}
       {/* r95 (PM): the job's name in full, never cut off: a long one wraps onto a second line. */}
-      <span data-launched-title className="min-w-0 flex-1 whitespace-normal break-words text-[13px] leading-snug text-content">
+      <span data-launched-title className="min-w-[min(10rem,100%)] flex-1 whitespace-normal break-words text-[13px] leading-snug text-content">
         {title}
         {ranWhere ? (
           <span data-launched-ran className="mt-0.5 block text-[12px] leading-snug text-content/55">
@@ -174,7 +174,7 @@ export function LaunchedSessionCard({
       {view?.state === "waiting" ? (
         <span
           data-launched-waiting
-          className="shrink-0 text-[12px] text-content/55"
+          className="w-full pl-6 text-[12px] text-content/60"
         >
           {status?.label}
         </span>

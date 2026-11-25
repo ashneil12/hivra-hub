@@ -859,6 +859,12 @@ function dependencyWait(job: { id: string; fanout?: unknown }, ctx: AdmitContext
  * window that owns the queue publishes the same function here. Absent, a card cannot tell a held task from a free worker.
  */
 let queueDependency: AdmitContext["dependency"] | undefined;
+let queueContext: (() => AdmitContext) | undefined;
+
+/** The card reads the same live admission explanation that task_status returns. */
+export function queuedWaitLine(job: QueuedWorker): string | undefined {
+  return queueContext ? queuedLine(job, queueContext()) : undefined;
+}
 
 /** Publish (or clear) the dependency check the waiting cards read. */
 export function setQueueDependency(next: AdmitContext["dependency"] | undefined): void {
@@ -1254,6 +1260,7 @@ export function resetWorkerPool(): void {
   heldTold.clear();
   heldEpisode.clear();
   queueDependency = undefined;
+  queueContext = undefined;
   changed();
 }
 
@@ -1284,6 +1291,7 @@ export function workerPoolHost(deps: {
 }): WorkerPoolHost {
   useLiveSpendSink();
   const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room, dependency: deps.dependency });
+  queueContext = ctx;
   return {
     openRows: deps.openRows,
     waitsOnProviders: deps.dependency !== undefined,

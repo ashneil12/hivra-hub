@@ -485,7 +485,9 @@ pub fn window_closed(app: &AppHandle, label: &str) {
 }
 
 pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
-    cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
+    // Non-secret provenance survives the approved-secret worker's MONOCODE_* scrub.
+    cmd.env("DROPWAVE_AGENT_PROCESS", "1")
+        .env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
         .env_remove("MONOCODE_APP_TOKEN")

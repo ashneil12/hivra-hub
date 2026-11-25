@@ -24,6 +24,7 @@ import {
   dequeueWorker,
   heldLine,
   queuedWorker,
+  queuedWaitLine,
   taskWait,
   useWorkerPoolVersion,
   type QueuedWorker,
@@ -122,6 +123,7 @@ export function DelegationBatchRow({
                       title: waiting[index]!.title,
                       // WP-171: held, or waiting on a provider, is another task. A free worker is the project's own limit.
                       forTask: waitsOnTask(waiting[index]),
+                      waitingLine: queuedWaitLine(waiting[index]!),
                     }
                   : cardView(
                       views?.get(launch.sessionId),

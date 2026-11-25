@@ -8,6 +8,8 @@
 // an intake lane (Linear Triage). The word-for-word quote rule is the memory curator's own (curator.ts `cited`).
 // No code or prompt text copied.
 
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
+
 export type AskKind = "do" | "answer" | "decide" | "rule" | "idea";
 export const ASK_KINDS: readonly AskKind[] = ["do", "answer", "decide", "rule", "idea"];
 
@@ -291,6 +293,8 @@ const ACK =
 export function nothingToHear(message: string): boolean {
   const value = message.trim();
   if (value.length < 8) return true;
+  if (isBackgroundMessage(value)) return true;
+  if (/^(?:(?:yeah|yes|okay|ok|tbh|to be honest)[,\s]+)*i (?:just )?(?:want(?:ed)?|wanna) to (?:start|keep) working (?:on|with) (?:you|this|it)(?: some more| again| more)?[.!]*$/i.test(value)) return true;
   if (/^\s*\[MonoCode /.test(value) || /^\//.test(value)) return true;
   return ACK.test(value);
 }

@@ -4,24 +4,41 @@
 // a first mate or a finished job says about an ask shows here; Working is every job in every project, with the way in to
 // take one over.
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Check } from "../../../shared/ui/icons";
 import { Popover } from "../../../shared/ui/Popover";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { CircleWord } from "../../hub/ui/StatusMark";
 import { openFromHome } from "../../home/model/opener";
 import { findMono } from "../../monos/model/mono";
-import { handBack, hasJumpedIn, useDelegationRows, useDelegationsVersion } from "../../monos/model/delegationStore";
+import {
+  handBack,
+  hasJumpedIn,
+  useDelegationRows,
+  useDelegationsVersion,
+} from "../../monos/model/delegationStore";
 import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
 import { useLastAnswered } from "../../needs/model/answeredNeeds";
-import { quoteAsked, quoteInChat, quoteJob, quoteNeed } from "../model/quoteInChat";
+import {
+  quoteAsked,
+  quoteInChat,
+  quoteJob,
+  quoteNeed,
+} from "../model/quoteInChat";
 import { openBesideChief } from "../model/besideChat";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { askStore } from "../model/askStore";
 import { askedOpenCount, askedRows, type AskedRow } from "../model/askedView";
-import { JOB_WORD, jobGroups, jobStatus, openJobCount } from "../model/chiefJobs";
+import {
+  JOB_WORD,
+  jobGroups,
+  jobStatus,
+  openJobCount,
+} from "../model/chiefJobs";
 
-const subscribeAsks = (fn: () => void): (() => void) => askStore().subscribe(fn);
+const subscribeAsks = (fn: () => void): (() => void) =>
+  askStore().subscribe(fn);
 const asksNow = () => askStore().doc();
 
 /** The asks he made that are still on the list (dropped ones are gone), newest first. */
@@ -31,10 +48,15 @@ function useAsked(): AskedRow[] {
 }
 
 const HINT = "px-2 py-2 text-[12px] leading-4 text-content/60";
-const QUIET = "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content";
+const QUIET =
+  "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content";
 const REVEAL = "opacity-0 focus-visible:opacity-100 group-hover:opacity-100";
 
-export function useChiefCounts(): { needs: number; asked: number; working: number } {
+export function useChiefCounts(): {
+  needs: number;
+  asked: number;
+  working: number;
+} {
   const needs = useNeedsYou().length;
   const asked = askedOpenCount(useAsked());
   const working = openJobCount(useDelegationRows());
@@ -45,59 +67,178 @@ export function useChiefCounts(): { needs: number; asked: number; working: numbe
  * The one Needs you list, answered where it is: a row slides its card open under itself (every answer, his own words),
  * and the answer's line stays a moment after the row leaves, so the tap is seen to land.
  */
-export function ChiefNeeds({ onQuote }: { onQuote?: (text: string) => void } = {}) {
+export function ChiefNeeds({
+  onQuote,
+}: { onQuote?: (text: string) => void } = {}) {
   const [picked, setPicked] = useState<string | null>(null);
   const count = useNeedsYou().length;
   const answered = useLastAnswered();
   return (
     <div data-chief-needs className="-mx-2 -my-2 flex flex-col">
-      {answered ? <AnsweredLine entry={answered} className="px-4 pb-1 pt-3" /> : null}
-      {count === 0 && !answered ? <p className={`${HINT} px-4 pt-3`}>Nothing needs you right now.</p> : null}
+      {answered ? (
+        <AnsweredLine entry={answered} className="px-4 pb-1 pt-3" />
+      ) : null}
+      {count === 0 && !answered ? (
+        <p className={`${HINT} px-4 pt-3`}>Nothing needs you right now.</p>
+      ) : null}
       <InboxNeeds
         pick={{
           picked,
           onPick: (item) => setPicked(item.key === picked ? null : item.key),
           renderOpen: (item) => <NeedDetail item={item} compact />,
         }}
-        onQuote={onQuote ? (item, project) => onQuote(quoteNeed(item, project)) : undefined}
+        onQuote={
+          onQuote
+            ? (item, project) => onQuote(quoteNeed(item, project))
+            : undefined
+        }
       />
     </div>
   );
 }
 
 /** Everything the owner asked for, newest first: still open, working, done (with what closed it) or waiting on him. */
-export function ChiefAsked({ onQuote }: { onQuote?: (text: string) => void } = {}) {
+export function ChiefAsked({
+  onQuote,
+}: { onQuote?: (text: string) => void } = {}) {
   const asked = useAsked();
-  if (asked.length === 0) return <p className={HINT}>What you ask for shows here, so nothing gets lost in a long chat.</p>;
-  return (
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const change = async (
+    item: AskedRow,
+    status: "done" | "dropped" | "heard",
+  ) => {
+    setBusy(item.id);
+    setProblem(null);
+    try {
+      const result = await askStore().change(
+        item.id,
+        {
+          status,
+          ...(status === "done"
+            ? { proof: "Marked done by you." }
+            : status === "heard"
+              ? { proof: "", note: "" }
+              : {}),
+        },
+        "ash",
+      );
+      if ("problem" in result) setProblem(result.problem);
+    } catch {
+      setProblem("Couldn't save the change. Please try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (asked.length === 0)
+    return (
+      <p className={HINT}>
+        What you ask for shows here, so nothing gets lost in a long chat.
+      </p>
+    );
+  const rows = (items: AskedRow[]) => (
     <ul data-chief-asked className="flex flex-col">
-      {asked.map((item, index) => (
-        <li key={item.id} data-asked={item.open ? "open" : "handled"} data-asked-status={item.status} className={`group flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}>
-          <span className="mt-0.5">
-            <CircleWord circle={item.red ? "red" : "grey"} word={item.word} ringOnly />
-          </span>
+      {items.map((item, index) => (
+        <li
+          key={item.id}
+          data-asked={item.open ? "open" : "handled"}
+          data-asked-status={item.status}
+          className={`group flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}
+        >
+          <button
+            type="button"
+            disabled={busy !== null}
+            aria-label={`${item.open ? "Mark done" : "Reopen"}: ${item.title}`}
+            className="mt-0.5 shrink-0 rounded focus-visible:outline focus-visible:outline-2"
+            onClick={() => void change(item, item.open ? "done" : "heard")}
+          >
+            {item.open ? (
+              <CircleWord
+                circle={item.red ? "red" : "grey"}
+                word={item.word}
+                ringOnly
+              />
+            ) : (
+              <Check
+                aria-hidden
+                className="size-3.5 text-content/60"
+                strokeWidth={1.75}
+              />
+            )}
+          </button>
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className={`text-[13px] leading-[18px] ${item.open ? "text-content" : "text-content/60"}`}>{item.title}</span>
+            <span
+              data-asked-title
+              className={`text-[13px] leading-[18px] ${item.open ? "text-content" : "text-content/60"}`}
+            >
+              {item.title}
+            </span>
             <span className="text-[11px] leading-4 text-content/60">
               {item.word}
               {item.said ? ` · said ${item.said} times` : ""}
               {item.note ? ` · ${item.note}` : ""}
             </span>
+            <span className="flex gap-2">
+              {onQuote ? (
+                <button
+                  type="button"
+                  data-quote-asked={item.id}
+                  aria-label={`Quote in the chat: ${item.title}`}
+                  className={`${QUIET} ${REVEAL}`}
+                  onClick={() =>
+                    onQuote(
+                      quoteAsked({
+                        title: item.title,
+                        status: item.word,
+                        note: item.note,
+                        said: item.said,
+                        words: item.words,
+                        id: item.id,
+                        chatId: item.chatId,
+                        blockId: item.blockId,
+                      }),
+                    )
+                  }
+                >
+                  Quote
+                </button>
+              ) : null}
+              {item.open ? (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  aria-label={`Not an ask: ${item.title}`}
+                  className={`${QUIET} ${REVEAL}`}
+                  onClick={() => void change(item, "dropped")}
+                >
+                  Not an ask
+                </button>
+              ) : null}
+            </span>
           </span>
-          {onQuote ? (
-            <button
-              type="button"
-              data-quote-asked={item.id}
-              aria-label={`Quote in the chat: ${item.title}`}
-              className={`${QUIET} ${REVEAL}`}
-              onClick={() => onQuote(quoteAsked({ title: item.title, status: item.word, note: item.note ?? undefined, said: item.said }))}
-            >
-              Quote
-            </button>
-          ) : null}
         </li>
       ))}
     </ul>
+  );
+  const open = asked.filter((item) => item.open);
+  const closed = asked.filter((item) => !item.open);
+  return (
+    <div>
+      {problem ? (
+        <p role="alert" className={HINT}>
+          {problem}
+        </p>
+      ) : null}
+      {open.length ? rows(open) : <p className={HINT}>Nothing left open.</p>}
+      {closed.length ? (
+        <details data-asked-finished className="border-t border-stroke">
+          <summary className={`${HINT} cursor-pointer`}>
+            Finished ({closed.length})
+          </summary>
+          {rows(closed)}
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -116,16 +257,26 @@ export function ChiefWorking({
   useDelegationsVersion();
   const rows = useDelegationRows();
   const groups = jobGroups(rows, hubData().listProjects());
-  if (groups.length === 0) return <p className={HINT}>Nothing running right now.</p>;
+  if (groups.length === 0)
+    return <p className={HINT}>Nothing running right now.</p>;
   return (
     <div data-chief-working className="flex flex-col gap-3">
       {groups.map(({ projectId, name, rows: list }) => {
-        const leadMono = list.map((row) => (row.ownerMono ? findMono(row.ownerMono) : undefined)).find(Boolean);
+        const leadMono = list
+          .map((row) => (row.ownerMono ? findMono(row.ownerMono) : undefined))
+          .find(Boolean);
         const lead = leadMono?.name;
         // The project's first mate's own chat for it: where a message to "the EXO lead" goes.
-        const leadChat = leadMono ? ((projectId ? leadMono.projectSessions?.[projectId] : undefined) ?? leadMono.sessionId) : undefined;
+        const leadChat = leadMono
+          ? ((projectId ? leadMono.projectSessions?.[projectId] : undefined) ??
+            leadMono.sessionId)
+          : undefined;
         return (
-          <section key={projectId ?? "none"} aria-label={name} className="flex flex-col">
+          <section
+            key={projectId ?? "none"}
+            aria-label={name}
+            className="flex flex-col"
+          >
             <h3 className="group flex items-baseline gap-1.5 px-2 pb-1 text-[12px] leading-5">
               <span className="font-medium text-content">{name}</span>
               <span className="text-content/60">
@@ -153,16 +304,30 @@ export function ChiefWorking({
                 const word = JOB_WORD[status];
                 const mine = hasJumpedIn(row.childSession);
                 // The job's own first mate, not the first one in the project.
-                const owner = row.ownerMono ? findMono(row.ownerMono)?.name : undefined;
+                const owner = row.ownerMono
+                  ? findMono(row.ownerMono)?.name
+                  : undefined;
                 return (
-                  <li key={row.id} data-chief-job={row.id} className="group flex items-start gap-2 border-t border-stroke px-2 py-1.5">
+                  <li
+                    key={row.id}
+                    data-chief-job={row.id}
+                    className="group flex items-start gap-2 border-t border-stroke px-2 py-1.5"
+                  >
                     <span className="mt-0.5">
-                      <CircleWord circle={red ? "red" : "grey"} word={word} ringOnly />
+                      <CircleWord
+                        circle={red ? "red" : "grey"}
+                        word={word}
+                        ringOnly
+                      />
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-[13px] leading-[18px] text-content">{row.title ?? row.goal ?? "Untitled work"}</span>
+                      <span className="truncate text-[13px] leading-[18px] text-content">
+                        {row.title ?? row.goal ?? "Untitled work"}
+                      </span>
                       <span className="truncate text-[11px] leading-4 text-content/60">
-                        {mine ? "You're driving this one" : (row.statusNotice ?? word)}
+                        {mine
+                          ? "You're driving this one"
+                          : (row.statusNotice ?? word)}
                       </span>
                     </span>
                     {onQuote ? (
@@ -177,7 +342,9 @@ export function ChiefWorking({
                               title: row.title ?? row.goal ?? "Untitled work",
                               project: name,
                               lead: owner,
-                              state: mine ? "You're driving this one" : (row.statusNotice ?? word),
+                              state: mine
+                                ? "You're driving this one"
+                                : (row.statusNotice ?? word),
                             }),
                           )
                         }
@@ -186,7 +353,13 @@ export function ChiefWorking({
                       </button>
                     ) : null}
                     {mine ? (
-                      <button type="button" data-hand-back className={QUIET} aria-label={`Hand ${row.title ?? "this job"} back${owner ? ` to ${owner}` : ""}`} onClick={() => handBack(row.childSession)}>
+                      <button
+                        type="button"
+                        data-hand-back
+                        className={QUIET}
+                        aria-label={`Hand ${row.title ?? "this job"} back${owner ? ` to ${owner}` : ""}`}
+                        onClick={() => handBack(row.childSession)}
+                      >
                         Hand back{owner ? ` to ${owner}` : ""}
                       </button>
                     ) : (
@@ -197,7 +370,12 @@ export function ChiefWorking({
                         aria-label={`Open ${row.title ?? "this job"}`}
                         onClick={() => {
                           // Beside the Chief of Staff's chat when it is on screen, so he reads it without leaving.
-                          if (!openBesideChief(row.childSession)) openFromHome({ kind: "chat", id: row.childSession, projectId: row.project ?? "" });
+                          if (!openBesideChief(row.childSession))
+                            openFromHome({
+                              kind: "chat",
+                              id: row.childSession,
+                              projectId: row.project ?? "",
+                            });
                         }}
                       >
                         Open
@@ -231,7 +409,12 @@ export function ChiefChips({ quoteTo }: { quoteTo?: string } = {}) {
     { id: "working" as const, label: "Working", count: counts.working },
   ];
   return (
-    <div ref={anchor} data-chief-chips className="flex items-center gap-1" data-tauri-drag-region="false">
+    <div
+      ref={anchor}
+      data-chief-chips
+      className="flex items-center gap-1"
+      data-tauri-drag-region="false"
+    >
       {chips.map((chip) => (
         <button
           key={chip.id}
@@ -240,19 +423,49 @@ export function ChiefChips({ quoteTo }: { quoteTo?: string } = {}) {
           data-chief-chip={chip.id}
           onClick={() => setOpen(open === chip.id ? null : chip.id)}
           className={`flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] ${
-            open === chip.id ? "bg-content/10 text-content" : "bg-content/5 text-content/70 hover:bg-content/8 hover:text-content"
+            open === chip.id
+              ? "bg-content/10 text-content"
+              : "bg-content/5 text-content/70 hover:bg-content/8 hover:text-content"
           }`}
         >
           {chip.label}
-          <span className="tabular-nums" style={chip.id === "needs" && chip.count ? { color: NEEDS_YOU_RED } : undefined}>
+          <span
+            className="tabular-nums"
+            style={
+              chip.id === "needs" && chip.count
+                ? { color: NEEDS_YOU_RED }
+                : undefined
+            }
+          >
             {chip.count}
           </span>
         </button>
       ))}
       {open ? (
-        <Popover anchor={anchor} side="bottom" align="end" width={440} maxHeight={620} onDismiss={() => setOpen(null)} role="dialog" aria-label={chips.find((chip) => chip.id === open)?.label} ignore="[data-chief-chips]" className="solid-panel-glass font-sans">
+        <Popover
+          anchor={anchor}
+          side="bottom"
+          align="end"
+          width={440}
+          maxHeight={620}
+          onDismiss={() => setOpen(null)}
+          role="dialog"
+          aria-label={chips.find((chip) => chip.id === open)?.label}
+          ignore="[data-chief-chips]"
+          className="solid-panel-glass font-sans"
+        >
           <div className="max-h-[600px] overflow-y-auto px-2 py-2">
-            {open === "needs" ? <ChiefNeeds onQuote={quote} /> : open === "asked" ? <ChiefAsked onQuote={quote} /> : <ChiefWorking onQuote={quote} besideOpen={!!quoteTo} onBeside={() => setOpen(null)} />}
+            {open === "needs" ? (
+              <ChiefNeeds onQuote={quote} />
+            ) : open === "asked" ? (
+              <ChiefAsked onQuote={quote} />
+            ) : (
+              <ChiefWorking
+                onQuote={quote}
+                besideOpen={!!quoteTo}
+                onBeside={() => setOpen(null)}
+              />
+            )}
           </div>
         </Popover>
       ) : null}

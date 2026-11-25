@@ -1053,6 +1053,7 @@ import {
   retryNow,
   setWorkerQueueBackend,
   subscribeWorkerPool,
+  useWorkerPoolVersion,
   tauriWorkerQueue,
   projectWorkerDefault,
   systemWorkerDefault,
@@ -2917,6 +2918,7 @@ function Workspace({
   }, [activeTab, currentProjectDock, runningTerminals]);
 
   const approvalDelegationRows = useDelegationRows();
+  const workerQueueVersion = useWorkerPoolVersion();
   const nextApproval = useMemo(
     () => approvalSessionIdsOf(sessions, approvalDelegationRows),
     [sessions, approvalDelegationRows],
@@ -16395,7 +16397,7 @@ function Workspace({
             mono: {
               mascot: look.mascot,
               color: look.color,
-              status: session ? monoState(session).status : "idle",
+              status: session ? monoState(session, crewRows(), queuedWorkers()).status : "idle",
             },
             project: "",
             title: look.name,
@@ -18431,7 +18433,7 @@ function Workspace({
         monoId={monoViewMono.id}
         cwd={monoViewSession.cwd}
         agent={monoLook(monoViewMono)}
-        state={monoState(monoViewSession)}
+        state={monoState(monoViewSession, crewRows(), queuedWorkers())}
         launches={monoLaunches}
         sessions={sessions}
         history={history}
@@ -18478,7 +18480,7 @@ function Workspace({
         key={monoViewMono.id}
         monoId={monoViewMono.id}
         agent={monoLook(monoViewMono)}
-        status={monoState(monoViewSession).status}
+        status={monoState(monoViewSession, crewRows(), queuedWorkers()).status}
         cwd={monoViewSession.cwd}
         harness={monoViewSession.harness}
         model={monoViewSession.model}
@@ -18508,7 +18510,7 @@ function Workspace({
       if (session) {
         // An idle Mono that is waiting on a pull request says so instead of nothing.
         const state = overlayLiveWorking(
-          monoState(session),
+          monoState(session, crewRows(), queuedWorkers()),
           liveBusySessionIds.has(session.id),
         );
         const waiting =
@@ -18534,6 +18536,8 @@ function Workspace({
     sessions,
     liveBusySessionIds,
     monoReplies.counts,
+    approvalDelegationRows,
+    workerQueueVersion,
     prWatches,
     prWatchVersion,
   ]);
@@ -18862,7 +18866,7 @@ function Workspace({
       }
       mono={
         monoCovers && monoViewMono && monoViewSession
-          ? { id: monoViewMono.id, look: monoLook(monoViewMono), state: monoState(monoViewSession) }
+          ? { id: monoViewMono.id, look: monoLook(monoViewMono), state: monoState(monoViewSession, crewRows(), queuedWorkers()) }
           : undefined
       }
       // The inset layout keeps these in the Mono's pane, under its tab.

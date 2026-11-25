@@ -71,6 +71,13 @@ fn main() {
         Some("backup-restore") => {
             std::process::exit(monocode_lib::backups::restore_helper_main(&rest()))
         }
+        // An agent calling the binary with no subcommand (or a typo) must never open a second daily app.
+        _ if std::env::var_os("MONOCODE_APP_ENDPOINT").is_some()
+            || std::env::var_os("DROPWAVE_AGENT_PROCESS").is_some() =>
+        {
+            eprintln!("No app window was opened. Use `monocode app --help` for app commands, or `monocode version --json` for this build.");
+            std::process::exit(64);
+        }
         _ => monocode_lib::run(),
     }
 }

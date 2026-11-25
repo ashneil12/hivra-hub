@@ -37,13 +37,13 @@ describe("main surfaces fill the width", () => {
     expect(src).toMatch(/<RoomText text=\{msg\.text\} className=\{`max-w-\[75ch\]/);
   });
 
-  it("a Mono's 1:1 fills the width like a room: transcript, composer, tool cards and code blocks (Critiquito 22 Oct)", () => {
+  it("a Mono's 1:1 centres its reading column with the composer (Ash, 13 Nov)", () => {
     const transcript = read("src/features/sessions/ui/AgentTranscript.tsx");
     // The Mono (bottom-aligned) column: no centred cap, the room's side padding with the rows' own px-4.
     const mono = transcript.split("\n").find((line) => line.includes(`className="chat-reading-limit`))!;
     expect(mono).toBeDefined();
-    expect(mono).not.toMatch(CAPPED);
-    expect(mono).not.toMatch(/\bmax-w-/);
+    expect(mono).toContain("mx-auto");
+    expect(mono).toContain("max-w-4xl");
     expect(mono).toMatch(/\bw-full\b.*\bpx-2\b.*\bxl:px-4\b/);
     // The composer, in the 1:1 and in a room, is never a centred capped box; the 1:1 dock uses the room's padding.
     expect(read("src/features/monos/ui/MonoComposer.tsx").split("\n").filter((line) => CAPPED.test(line))).toEqual([]);

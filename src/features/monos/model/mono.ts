@@ -1,3 +1,5 @@
+import type { QueuedWorker } from "./workerPool";
+import type { Delegation } from "./delegations";
 import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
@@ -988,7 +990,9 @@ export function monoState(
   session: Pick<
     Session,
     "blocks" | "busy" | "pendingQuestion" | "worktreeRemoved" | "usageLimit" | "queuedMessages"
-  >,
+  > & Partial<Pick<Session, "id">>,
+  rows: readonly Delegation[] = [],
+  queue: readonly Pick<QueuedWorker, "ownerSession">[] = [],
 ): MonoState {
   const { blocks, pendingQuestion: question } = session;
   if (!session.worktreeRemoved && question) {
@@ -1040,7 +1044,18 @@ export function monoState(
     if (asked && gateQuestion(asked).admit)
       return { status: "needs-you", activity: asked.provide ? forUser`Ash needs to provide ${asked.provide}` : asked.question };
   }
-  if (!session.busy) return { status: "idle" };
+  if (!session.busy) {
+    const latest = new Map<string, Delegation>();
+    for (const row of rows) {
+      const held = latest.get(row.id);
+      if (!held || row.version > held.version || (row.version === held.version && row.updatedAt > held.updatedAt)) latest.set(row.id, row);
+    }
+    const crew = session.id ? [...latest.values()].filter((row) => row.ownerSession === session.id && (row.state === "running" || row.state === "question")) : [];
+    const waiting = session.id ? queue.filter((job) => job.ownerSession === session.id).length : 0;
+    if (!crew.length && waiting) return { status: "paused", activity: `${waiting} ${waiting === 1 ? "job" : "jobs"} waiting to start` };
+    if (crew.length) return { status: "working", activity: `${crew.length} ${crew.length === 1 ? "job" : "jobs"} with its crew` };
+    return { status: "idle" };
+  }
   const last = blocks[blocks.length - 1];
   if (last?.role === "assistant" && !last.tool && last.streaming) {
     return { status: "working", activity: "Writing a reply" };

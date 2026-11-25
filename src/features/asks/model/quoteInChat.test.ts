@@ -34,3 +34,12 @@ it("puts the quote under what is already typed in that chat, once", () => {
   expect(quoteInChat(undefined, "Anything")).toBe(false);
   expect(quoteInChat("chief-main", "  ")).toBe(false);
 });
+
+it("keeps original wording and stable source even when titles are identical", () => {
+  const shared = { title: "Example: export", words: "Example: please export every invoice including the older ones", status: "Open", chatId: "example-chat", blockId: "example-message" };
+  const first = quoteAsked({ ...shared, id: "example-ask-1" });
+  const second = quoteAsked({ ...shared, id: "example-ask-2" });
+  expect(first).toContain(shared.words);
+  expect(first).toContain("Source: ask example-ask-1; chat example-chat; message example-message");
+  expect(first).not.toBe(second);
+});

@@ -336,6 +336,7 @@ export function devEnvironment({ slot, memory, background = false, home = os.hom
   for (const key of Object.keys(next))
     if (
       key === "TAURI_CONFIG" ||
+      key === "DROPWAVE_AGENT_PROCESS" ||
       key.startsWith("TAURI_ENV_") ||
       key.startsWith("MONOCODE_HUB_") ||
       key.startsWith("MONOCODE_APP_") ||
